@@ -81,6 +81,8 @@ backing_store.{cpp,hpp}: This defines a generic interface used by
 INTERESTING PROJECTS AND TODOS
 ------------------------------
 
+- Implement node merging.
+
 - Implement logging, transactions, and MVCC.  If this can be done in a
   way that does not touch the internals of betree, that would be extra
   cool.

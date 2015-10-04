@@ -374,6 +374,46 @@ private:
       return result;
     }
 
+    node_pointer merge(betree &bet,
+		       typename pivot_map::iterator begin,
+		       typename pivot_map::iterator end) {
+      node_pointer new_node = bet.ss->allocate(new node);
+      for (auto it = begin; it != end; ++it) {
+	new_node->elements.insert(it->second.child->elements.begin(),
+				  it->second.child->elements.end());
+	new_node->pivots.insert(it->second.child->pivots.begin(),
+				  it->second.child->pivots.end());
+      }
+      return new_node;
+    }
+
+    void merge_small_children(betree &bet) {
+      if (is_leaf())
+	return;
+
+      for (auto beginit = pivots.begin(); beginit != pivots.end(); ++beginit) {
+	uint64_t total_size = 0;
+	auto endit = beginit;
+	while (endit != pivots.end()) {
+	  if (total_size + beginit->second.child_size > 6 * bet.max_node_size / 10)
+	    break;
+	  total_size += beginit->second.child_size;
+	  ++endit;
+	}
+	if (endit != beginit) {
+	  node_pointer merged_node = merge(bet, beginit, endit);
+	  for (auto tmp = beginit; tmp != endit; ++tmp) {
+	    tmp->second.child->elements.clear();
+	    tmp->second.child->pivots.clear();
+	  }
+	  Key key = beginit->first;
+	  pivots.erase(beginit, endit);
+	  pivots[key] = child_info(merged_node, merged_node->pivots.size() + merged_node->elements.size());
+	  beginit = pivots.lower_bound(key);
+	}
+      }
+    }
+    
     // Receive a collection of new messages and perform recursive
     // flushes or splits as necessary.  If we split, return a
     // map with the new pivot keys pointing to the new nodes.
@@ -469,6 +509,8 @@ private:
 	}
       }
 
+      merge_small_children(bet);
+      
       debug(std::cout << "Done flushing " << this << std::endl);
       return result;
     }
@@ -588,6 +630,7 @@ private:
   swap_space *ss;
   uint64_t min_flush_size;
   uint64_t max_node_size;
+  uint64_t min_node_size;
   node_pointer root;
   uint64_t next_timestamp = 1; // Nothing has a timestamp of 0
   Value default_value;
@@ -595,10 +638,12 @@ private:
 public:
   betree(swap_space *sspace,
 	 uint64_t maxnodesize = DEFAULT_MAX_NODE_SIZE,
+	 uint64_t minnodesize = DEFAULT_MAX_NODE_SIZE / 4,
 	 uint64_t minflushsize = DEFAULT_MIN_FLUSH_SIZE) :
     ss(sspace),
     min_flush_size(minflushsize),
-    max_node_size(maxnodesize)
+    max_node_size(maxnodesize),
+    min_node_size(minnodesize)
   {
     root = ss->allocate(new node);
   }
