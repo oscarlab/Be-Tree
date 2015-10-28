@@ -86,141 +86,27 @@ void usage(char *name)
     << std::endl
     << "Options are" << std::endl
     << "  Required:"   << std::endl
-    << "    -d <backing_store_directory>                    [ default: none, parameter is required ]"      << std::endl
+    << "    -d <backing_store_directory>                    [ default: none, parameter is required ]"           << std::endl
+    << "    -m  <mode>  (test or benchmark)                 [ default: none, parameter required ]"              << std::endl
     << "  Betree tuning parameters:" << std::endl
     << "    -N <max_node_size>            (in elements)     [ default: " << DEFAULT_TEST_MAX_NODE_SIZE  << " ]" << std::endl
     << "    -f <min_flush_size>           (in elements)     [ default: " << DEFAULT_TEST_MIN_FLUSH_SIZE << " ]" << std::endl
     << "    -C <max_cache_size>           (in betree nodes) [ default: " << DEFAULT_TEST_CACHE_SIZE     << " ]" << std::endl
-    << "  Test configuration parameters" << std::endl
+    << "  Options for both tests and benchmarks" << std::endl
+    << "    -k <number_of_distinct_keys>                    [ default: " << DEFAULT_TEST_NDISTINCT_KEYS << " ]" << std::endl
+    << "    -t <number_of_operations>                       [ default: " << DEFAULT_TEST_NOPS           << " ]" << std::endl
+    << "    -s <random_seed>                                [ default: random ]"                                << std::endl
+    << "  Test scripting options" << std::endl
     << "    -o <output_script>                              [ default: no output ]"                             << std::endl
-    << "    Random tests" << std::endl
-    << "      -k <number_of_distinct_keys>                  [ default: " << DEFAULT_TEST_NDISTINCT_KEYS << " ]" << std::endl
-    << "      -t <number_of_operations>                     [ default: " << DEFAULT_TEST_NOPS           << " ]" << std::endl
-    << "      -s <random_seed>                              [ default: random ]"                           << std::endl
-    << "    Scripted tests" << std::endl
-    << "      -i <script_file>                              [ default: none ]"                             << std::endl;
+    << "    -i <script_file>                                [ default: none ]"                                  << std::endl;
 }
 
-int main(int argc, char **argv)
+int test(betree<uint64_t, std::string> &b,
+	 uint64_t nops,
+	 uint64_t number_of_distinct_keys,
+	 FILE *script_input,
+	 FILE *script_output)
 {
-  uint64_t max_node_size = DEFAULT_TEST_MAX_NODE_SIZE;
-  uint64_t min_flush_size = max_node_size / 4;
-  uint64_t cache_size = DEFAULT_TEST_CACHE_SIZE;
-  char *backing_store_dir = NULL;
-  uint64_t number_of_distinct_keys = DEFAULT_TEST_NDISTINCT_KEYS;
-  uint64_t nops = DEFAULT_TEST_NOPS;
-  char *script_infile = NULL;
-  char *script_outfile = NULL;
-  unsigned int random_seed = time(NULL) * getpid();
-  
-  int opt;
-  char *term;
-    
-  //////////////////////
-  // Argument parsing //
-  //////////////////////
-  
-  while ((opt = getopt(argc, argv, "d:N:f:C:o:k:t:s:i:")) != -1) {
-    switch (opt) {
-    case 'd':
-      backing_store_dir = optarg;
-      break;
-    case 'N':
-      max_node_size = strtoull(optarg, &term, 10);
-      if (*term) {
-	std::cerr << "Argument to -N must be an integer" << std::endl;
-	usage(argv[0]);
-	exit(1);
-      }
-      break;
-    case 'f':
-      min_flush_size = strtoull(optarg, &term, 10);
-      if (*term) {
-	std::cerr << "Argument to -f must be an integer" << std::endl;
-	usage(argv[0]);
-	exit(1);
-      }
-      break;
-    case 'C':
-      cache_size = strtoull(optarg, &term, 10);
-      if (*term) {
-	std::cerr << "Argument to -C must be an integer" << std::endl;
-	usage(argv[0]);
-	exit(1);
-      }
-      break;
-    case 'o':
-      script_outfile = optarg;
-      break;
-    case 'k':
-      number_of_distinct_keys = strtoull(optarg, &term, 10);
-      if (*term) {
-	std::cerr << "Argument to -k must be an integer" << std::endl;
-	usage(argv[0]);
-	exit(1);
-      }
-      break;
-    case 't':
-      nops = strtoull(optarg, &term, 10);
-      if (*term) {
-	std::cerr << "Argument to -t must be an integer" << std::endl;
-	usage(argv[0]);
-	exit(1);
-      }
-      break;
-    case 's':
-      random_seed = strtoull(optarg, &term, 10);
-      if (*term) {
-	std::cerr << "Argument to -s must be an integer" << std::endl;
-	usage(argv[0]);
-	exit(1);
-      }
-      srand(random_seed);
-      break;
-    case 'i':
-      script_infile = optarg;
-      break;
-    default:
-      std::cerr << "Unknown option '" << (char)opt << "'" << std::endl;
-      usage(argv[0]);
-      exit(1);
-    }
-  }
-  
-  FILE *script_input = NULL;
-  FILE *script_output = NULL;
-
-  if (script_infile) {
-    script_input = fopen(script_infile, "r");
-    if (script_input == NULL) {
-      perror("Couldn't open input file");
-      exit(1);
-    }
-  }
-  
-  if (script_outfile) {
-    script_output = fopen(script_outfile, "w");
-    if (script_output == NULL) {
-      perror("Couldn't open output file");
-      exit(1);
-    }
-  }
-
-  srand(random_seed);
-
-  if (backing_store_dir == NULL) {
-    std::cerr << "-d <backing_store_directory> is required" << std::endl;
-    usage(argv[0]);
-    exit(1);
-  }
-  
-  //////////////////////////////////////////
-  // Construct a betree and run the tests //
-  //////////////////////////////////////////
-  
-  one_file_per_object_backing_store ofpobs(backing_store_dir);
-  swap_space sspace(&ofpobs, cache_size);
-  betree<uint64_t, std::string> b(&sspace, max_node_size, min_flush_size);
   std::map<uint64_t, std::string> reference;
 
   for (unsigned int i = 0; i < nops; i++) {
@@ -305,13 +191,175 @@ int main(int argc, char **argv)
     }
   }
 
+  std::cout << "Test PASSED" << std::endl;
+  
+  return 0;
+}
+
+void benchmark(betree<uint64_t, std::string> &b,
+	       uint64_t nops,
+	       uint64_t number_of_distinct_keys)
+{
+  for (uint64_t i = 0; i < nops; i++) {
+    uint64_t t = rand() % number_of_distinct_keys;
+    b.update(t, std::to_string(t) + ":");
+  }
+}
+
+int main(int argc, char **argv)
+{
+  char *mode = NULL;
+  uint64_t max_node_size = DEFAULT_TEST_MAX_NODE_SIZE;
+  uint64_t min_flush_size = max_node_size / 4;
+  uint64_t cache_size = DEFAULT_TEST_CACHE_SIZE;
+  char *backing_store_dir = NULL;
+  uint64_t number_of_distinct_keys = DEFAULT_TEST_NDISTINCT_KEYS;
+  uint64_t nops = DEFAULT_TEST_NOPS;
+  char *script_infile = NULL;
+  char *script_outfile = NULL;
+  unsigned int random_seed = time(NULL) * getpid();
+ 
+  int opt;
+  char *term;
+    
+  //////////////////////
+  // Argument parsing //
+  //////////////////////
+  
+  while ((opt = getopt(argc, argv, "m:d:N:f:C:o:k:t:s:i:")) != -1) {
+    switch (opt) {
+    case 'm':
+      mode = optarg;
+    case 'd':
+      backing_store_dir = optarg;
+      break;
+    case 'N':
+      max_node_size = strtoull(optarg, &term, 10);
+      if (*term) {
+	std::cerr << "Argument to -N must be an integer" << std::endl;
+	usage(argv[0]);
+	exit(1);
+      }
+      break;
+    case 'f':
+      min_flush_size = strtoull(optarg, &term, 10);
+      if (*term) {
+	std::cerr << "Argument to -f must be an integer" << std::endl;
+	usage(argv[0]);
+	exit(1);
+      }
+      break;
+    case 'C':
+      cache_size = strtoull(optarg, &term, 10);
+      if (*term) {
+	std::cerr << "Argument to -C must be an integer" << std::endl;
+	usage(argv[0]);
+	exit(1);
+      }
+      break;
+    case 'o':
+      script_outfile = optarg;
+      break;
+    case 'k':
+      number_of_distinct_keys = strtoull(optarg, &term, 10);
+      if (*term) {
+	std::cerr << "Argument to -k must be an integer" << std::endl;
+	usage(argv[0]);
+	exit(1);
+      }
+      break;
+    case 't':
+      nops = strtoull(optarg, &term, 10);
+      if (*term) {
+	std::cerr << "Argument to -t must be an integer" << std::endl;
+	usage(argv[0]);
+	exit(1);
+      }
+      break;
+    case 's':
+      random_seed = strtoull(optarg, &term, 10);
+      if (*term) {
+	std::cerr << "Argument to -s must be an integer" << std::endl;
+	usage(argv[0]);
+	exit(1);
+      }
+      srand(random_seed);
+      break;
+    case 'i':
+      script_infile = optarg;
+      break;
+    default:
+      std::cerr << "Unknown option '" << (char)opt << "'" << std::endl;
+      usage(argv[0]);
+      exit(1);
+    }
+  }
+  
+  FILE *script_input = NULL;
+  FILE *script_output = NULL;
+
+  if (mode == NULL || (strcmp(mode, "test") != 0 && strcmp(mode, "benchmark") != 0)) {
+    std::cerr << "Must specify a mode of \"test\" or \"benchmark\"" << std::endl;
+    usage(argv[0]);
+    exit(1);
+  }
+
+  if (strcmp(mode, "benchmark") == 0) {
+    if (script_infile) {
+      std::cerr << "Cannot specify an input script in benchmark mode" << std::endl;
+      usage(argv[0]);
+      exit(1);
+    }
+    if (script_outfile) {
+      std::cerr << "Cannot specify an output script in benchmark mode" << std::endl;
+      usage(argv[0]);
+      exit(1);
+    }
+  }
+  
+  if (script_infile) {
+    script_input = fopen(script_infile, "r");
+    if (script_input == NULL) {
+      perror("Couldn't open input file");
+      exit(1);
+    }
+  }
+  
+  if (script_outfile) {
+    script_output = fopen(script_outfile, "w");
+    if (script_output == NULL) {
+      perror("Couldn't open output file");
+      exit(1);
+    }
+  }
+
+  srand(random_seed);
+
+  if (backing_store_dir == NULL) {
+    std::cerr << "-d <backing_store_directory> is required" << std::endl;
+    usage(argv[0]);
+    exit(1);
+  }
+  
+  ////////////////////////////////////////////////////////
+  // Construct a betree and run the tests or benchmarks //
+  ////////////////////////////////////////////////////////
+  
+  one_file_per_object_backing_store ofpobs(backing_store_dir);
+  swap_space sspace(&ofpobs, cache_size);
+  betree<uint64_t, std::string> b(&sspace, max_node_size, min_flush_size);
+
+  if (strcmp(mode, "test") == 0) 
+    test(b, nops, number_of_distinct_keys, script_input, script_output);
+  else
+    benchmark(b, nops, number_of_distinct_keys);
+  
   if (script_input)
     fclose(script_input);
   
   if (script_output)
     fclose(script_output);
-  
-  std::cout << "Test PASSED" << std::endl;
-  
+
   return 0;
 }
+

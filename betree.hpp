@@ -367,6 +367,11 @@ private:
 	  }
 	}
       }
+      
+      for (auto it = result.begin(); it != result.end(); ++it)
+	it->second.child_size = it->second.child->elements.size() +
+	  it->second.child->pivots.size();
+      
       assert(pivot_idx == pivots.end());
       assert(elt_idx == elements.end());
       pivots.clear();
@@ -464,7 +469,11 @@ private:
       	if (!new_children.empty()) {
       	  pivots.erase(first_pivot_idx);
       	  pivots.insert(new_children.begin(), new_children.end());
-      	}
+      	} else {
+	  first_pivot_idx->second.child_size =
+	    first_pivot_idx->second.child->pivots.size() +
+	    first_pivot_idx->second.child->elements.size();
+	}
 
       } else {
 	
@@ -500,6 +509,10 @@ private:
 	  if (!new_children.empty()) {
 	    pivots.erase(child_pivot);
 	    pivots.insert(new_children.begin(), new_children.end());
+	  } else {
+	    first_pivot_idx->second.child_size =
+	      child_pivot->second.child->pivots.size() +
+	      child_pivot->second.child->elements.size();
 	  }
 	}
 
@@ -509,7 +522,7 @@ private:
 	}
       }
 
-      merge_small_children(bet);
+      //merge_small_children(bet);
       
       debug(std::cout << "Done flushing " << this << std::endl);
       return result;
