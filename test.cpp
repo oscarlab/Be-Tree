@@ -230,6 +230,7 @@ int main(int argc, char **argv)
     switch (opt) {
     case 'm':
       mode = optarg;
+      break;
     case 'd':
       backing_store_dir = optarg;
       break;
