@@ -3,6 +3,8 @@
 
 #ifdef DEBUG
 #define debug(x) (x)
+#elif defined(_DEBUG)
+#define debug(x) (x)
 #else
 #define debug(x)
 #endif
