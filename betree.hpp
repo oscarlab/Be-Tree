@@ -178,6 +178,8 @@ bool operator==(const Message<Value> &a, const Message<Value> &b) {
 template<class Key, class Value> class betree {
 private:
 
+  static constexpr uint64_t message_bytes = sizeof(Message<Value>);
+
   class node;
   // We let a swap_space handle all the I/O.
   typedef typename swap_space::pointer<node> node_pointer;
@@ -207,8 +209,11 @@ private:
     node_pointer child;
     uint64_t child_size;
   };
+
   typedef typename std::map<Key, child_info> pivot_map;
   typedef typename std::map<MessageKey<Key>, Message<Value> > message_map;
+
+  static constexpr uint64_t pivot_bytes = sizeof(child_info);
     
   class node : public serializable {
   public:
@@ -325,7 +330,7 @@ private:
     // Requires: there are less than MIN_FLUSH_SIZE things in elements
     //           destined for each child in pivots);
     pivot_map split(betree &bet) {
-      assert(pivots.size() + elements.size() >= bet.max_node_size);
+      assert(pivots_bytes() + elements_bytes() >= bet.max_node_size);
       // This size split does a good job of causing the resulting
       // nodes to have size between 0.4 * MAX_NODE_SIZE and 0.6 * MAX_NODE_SIZE.
       int num_new_leaves =
@@ -637,7 +642,14 @@ private:
       deserialize(fs, context, elements);
     }
 
-    
+    private:
+      uint64_t elements_bytes() {
+        return elements.size() * message_bytes;
+      }
+
+      uint64_t pivots_bytes() {
+        return pivots.size() * pivot_bytes;
+      }
   };
 
   swap_space *ss;
@@ -650,9 +662,9 @@ private:
   
 public:
   betree(swap_space *sspace,
-	 uint64_t maxnodesize = DEFAULT_MAX_NODE_SIZE,
-	 uint64_t minnodesize = DEFAULT_MAX_NODE_SIZE / 4,
-	 uint64_t minflushsize = DEFAULT_MIN_FLUSH_SIZE) :
+	 uint64_t maxnodesize = DEFAULT_MAX_NODE_SIZE * message_bytes,
+	 uint64_t minnodesize = (DEFAULT_MAX_NODE_SIZE / 4) * message_bytes,
+	 uint64_t minflushsize = DEFAULT_MIN_FLUSH_SIZE * message_bytes) :
     ss(sspace),
     min_flush_size(minflushsize),
     max_node_size(maxnodesize),
