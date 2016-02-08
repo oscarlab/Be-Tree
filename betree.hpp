@@ -349,8 +349,8 @@ private:
 	result[pivot_idx != pivots.end() ?
 	       pivot_idx->first :
 	       elt_idx->first.key] = child_info(new_node,
-						new_node->elements.size() +
-						new_node->pivots.size());
+						new_node->elements_bytes() +
+						new_node->pivots_bytes());
 	while(things_moved < (i+1) * things_per_new_leaf &&
 	      (pivot_idx != pivots.end() || elt_idx != elements.end())) {
 	  if (pivot_idx != pivots.end()) {
@@ -418,7 +418,7 @@ private:
 	  }
 	  Key key = beginit->first;
 	  pivots.erase(beginit, endit);
-	  pivots[key] = child_info(merged_node, merged_node->pivots.size() + merged_node->elements.size());
+	  pivots[key] = child_info(merged_node, merged_node->pivots_bytes() + merged_node->elements_bytes());
 	  beginit = pivots.lower_bound(key);
 	}
       }
@@ -441,7 +441,7 @@ private:
       if (is_leaf()) {
 	for (auto it = elts.begin(); it != elts.end(); ++it)
 	  apply(it->first, it->second, bet.default_value);
-	if (elements.size() + pivots.size() >= bet.max_node_size)
+	if (elements_bytes() + pivots_bytes() >= bet.max_node_size)
 	  result = split(bet);
 	return result;
       }	
@@ -486,7 +486,7 @@ private:
 	  apply(it->first, it->second, bet.default_value);
 
 	// Now flush to out-of-core or clean children as necessary
-	while (elements.size() + pivots.size() >= bet.max_node_size) {
+	while (elements_bytes() + pivots_bytes() >= bet.max_node_size) {
 	  // Find the child with the largest set of messages in our buffer
 	  unsigned int max_size = 0;
 	  auto child_pivot = pivots.begin();
@@ -496,10 +496,10 @@ private:
 	    auto elt_it = get_element_begin(it); 
 	    auto elt_it2 = get_element_begin(it2); 
 	    unsigned int dist = distance(elt_it, elt_it2);
-	    if (dist > max_size) {
+	    if (dist * message_bytes > max_size) {
 	      child_pivot = it;
 	      next_pivot = it2;
-	      max_size = dist;
+	      max_size = dist * message_bytes;
 	    }
 	  }
 	  if (!(max_size > bet.min_flush_size ||
@@ -522,7 +522,7 @@ private:
 	}
 
 	// We have too many pivots to efficiently flush stuff down, so split
-	if (elements.size() + pivots.size() > bet.max_node_size) {
+	if (elements_bytes() + pivots_bytes() > bet.max_node_size) {
 	  result = split(bet);
 	}
       }
