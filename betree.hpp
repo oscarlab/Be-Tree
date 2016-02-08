@@ -334,7 +334,7 @@ private:
       // This size split does a good job of causing the resulting
       // nodes to have size between 0.4 * MAX_NODE_SIZE and 0.6 * MAX_NODE_SIZE.
       int num_new_leaves =
-	(pivots.size() + elements.size())  / (10 * bet.max_node_size / 24);
+	(pivots_bytes() + elements_bytes()) / (10 * bet.max_node_size / 24);
       int things_per_new_leaf =
 	(pivots.size() + elements.size() + num_new_leaves - 1) / num_new_leaves;
 
@@ -374,8 +374,8 @@ private:
       }
       
       for (auto it = result.begin(); it != result.end(); ++it)
-	it->second.child_size = it->second.child->elements.size() +
-	  it->second.child->pivots.size();
+	it->second.child_size = it->second.child->elements_bytes() +
+	  it->second.child->pivots_bytes();
       
       assert(pivot_idx == pivots.end());
       assert(elt_idx == elements.end());
@@ -476,8 +476,8 @@ private:
       	  pivots.insert(new_children.begin(), new_children.end());
       	} else {
 	  first_pivot_idx->second.child_size =
-	    first_pivot_idx->second.child->pivots.size() +
-	    first_pivot_idx->second.child->elements.size();
+	    first_pivot_idx->second.child->pivots_bytes() +
+	    first_pivot_idx->second.child->elements_bytes();
 	}
 
       } else {
@@ -516,8 +516,8 @@ private:
 	    pivots.insert(new_children.begin(), new_children.end());
 	  } else {
 	    first_pivot_idx->second.child_size =
-	      child_pivot->second.child->pivots.size() +
-	      child_pivot->second.child->elements.size();
+	      child_pivot->second.child->pivots_bytes() +
+	      child_pivot->second.child->elements_bytes();
 	  }
 	}
 
