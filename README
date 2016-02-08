@@ -100,7 +100,7 @@ INTERESTING PROJECTS AND TODOS
   answer the query, saving disk bandwidth.
 
 - Modify system to track sizes in bytes instead of nodes, keys,
-  values, etc.
+  values, etc. <-- IN PROGRESS
 
 - Add multi-threading support.
 
