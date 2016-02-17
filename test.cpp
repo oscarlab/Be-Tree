@@ -221,6 +221,8 @@ int main(int argc, char **argv)
  
   int opt;
   char *term;
+
+  std::cout << sizeof(betree<uint64_t, uint64_t>) << std::endl;
     
   //////////////////////
   // Argument parsing //

@@ -177,23 +177,22 @@ bool operator==(const Message<Value> &a, const Message<Value> &b) {
 
 // For non-pod values and keys, user must inherit from this class
 class betree_base {
-protected:
-  virtual uint64_t serial_bytes() = 0;
+public:
+  virtual uint64_t in_memory_size() {
+    return 
+  }
 };
+
+#define DESIGN_CONTRACT(T) static_assert (\
+        std::is_pod<T>::value || \
+        std::is_base_of<betree_base, T>::value,\
+        "Non-pod values and keys must inherit from betree_base."\
+        )
 
 template<class Key, class Value> class betree {
 private:
-  template <typename T>
-  struct design_contract {
-    static_assert (
-      std::is_pod<T>::value ||
-      std::is_base_of<betree_base, T>::value,
-      "Non-pod values and keys must inherit from betree_base."
-    );
-  };
-
-  typedef design_contract<Value> value_design_contract;
-  typedef design_contract<Key> key_design_contract;
+  DESIGN_CONTRACT(Value);
+  DESIGN_CONTRACT(Key);
 
   static constexpr uint64_t message_bytes = sizeof(Message<Value>);
 
