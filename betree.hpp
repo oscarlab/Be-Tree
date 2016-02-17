@@ -53,6 +53,7 @@
 #include <map>
 #include <vector>
 #include <cassert>
+#include <type_traits>
 #include "swap_space.hpp"
 #include "backing_store.hpp"
 
@@ -174,9 +175,25 @@ bool operator==(const Message<Value> &a, const Message<Value> &b) {
 // Note: we will flush MIN_FLUSH_SIZE/2 items to a clean in-memory child.
 #define DEFAULT_MIN_FLUSH_SIZE (DEFAULT_MAX_NODE_SIZE / 16ULL)
 
+// For non-pod values and keys, user must inherit from this class
+class betree_base {
+protected:
+  virtual uint64_t serial_bytes() = 0;
+};
 
 template<class Key, class Value> class betree {
 private:
+  template <typename T>
+  struct design_contract {
+    static_assert (
+      std::is_pod<T>::value ||
+      std::is_base_of<betree_base, T>::value,
+      "Non-pod values and keys must inherit from betree_base."
+    );
+  };
+
+  typedef design_contract<Value> value_design_contract;
+  typedef design_contract<Key> key_design_contract;
 
   static constexpr uint64_t message_bytes = sizeof(Message<Value>);
 
