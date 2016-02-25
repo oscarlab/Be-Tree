@@ -114,3 +114,7 @@ INTERESTING PROJECTS AND TODOS
   compressing it but keeping it in memory)
 
 - Implement a backing_store that manages space in a single file.
+
+- Reinsert results computed from several upserts into the top of the
+  tree so we don't have to recompute them.
+
