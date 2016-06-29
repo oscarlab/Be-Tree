@@ -586,9 +586,9 @@ private:
 
     std::pair<MessageKey<Key>, Message<Value> >
     get_next_message_from_children(const MessageKey<Key> *mkey) const {
-      auto it = (mkey && pivots.begin()->first < *mkey)
-	? get_pivot(mkey->key)
-	: pivots.begin();
+      if (mkey && *mkey < pivots.begin()->first)
+	mkey = NULL;
+      auto it = mkey ? get_pivot(mkey->key) : pivots.begin();
       while (it != pivots.end()) {
 	try {
 	  return it->second.child->get_next_message(mkey);

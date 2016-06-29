@@ -72,8 +72,8 @@ void do_scan(typename betree<Key, Value>::iterator &betit,
   assert(betit == b.end());
 }
 
-#define DEFAULT_TEST_MAX_NODE_SIZE (1ULL<<4)
-#define DEFAULT_TEST_MIN_FLUSH_SIZE (DEFAULT_MAX_NODE_SIZE / 4)
+#define DEFAULT_TEST_MAX_NODE_SIZE (1ULL<<6)
+#define DEFAULT_TEST_MIN_FLUSH_SIZE (DEFAULT_TEST_MAX_NODE_SIZE / 4)
 #define DEFAULT_TEST_CACHE_SIZE (4)
 #define DEFAULT_TEST_NDISTINCT_KEYS (1ULL << 10)
 #define DEFAULT_TEST_NOPS (1ULL << 12)
@@ -210,7 +210,7 @@ int main(int argc, char **argv)
 {
   char *mode = NULL;
   uint64_t max_node_size = DEFAULT_TEST_MAX_NODE_SIZE;
-  uint64_t min_flush_size = max_node_size / 4;
+  uint64_t min_flush_size = DEFAULT_TEST_MIN_FLUSH_SIZE;
   uint64_t cache_size = DEFAULT_TEST_CACHE_SIZE;
   char *backing_store_dir = NULL;
   uint64_t number_of_distinct_keys = DEFAULT_TEST_NDISTINCT_KEYS;
