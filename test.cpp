@@ -11,8 +11,23 @@
 
 #include <string.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include "betree.hpp"
+
+void timer_start(uint64_t &timer)
+{
+  struct timeval t;
+  assert(!gettimeofday(&t, NULL));
+  timer -= 1000000*t.tv_sec + t.tv_usec;
+}
+
+void timer_stop(uint64_t &timer)
+{
+  struct timeval t;
+  assert(!gettimeofday(&t, NULL));
+  timer += 1000000*t.tv_sec + t.tv_usec;
+}
 
 int next_command(FILE *input, int *op, uint64_t *arg)
 {
@@ -87,7 +102,10 @@ void usage(char *name)
     << "Options are" << std::endl
     << "  Required:"   << std::endl
     << "    -d <backing_store_directory>                    [ default: none, parameter is required ]"           << std::endl
-    << "    -m  <mode>  (test or benchmark)                 [ default: none, parameter required ]"              << std::endl
+    << "    -m  <mode>  (test or benchmark-<mode>)          [ default: none, parameter required ]"              << std::endl
+    << "        benchmark modes:"                                                                               << std::endl
+    << "          upserts    "                                                                                  << std::endl
+    << "          queries    "                                                                                  << std::endl
     << "  Betree tuning parameters:" << std::endl
     << "    -N <max_node_size>            (in elements)     [ default: " << DEFAULT_TEST_MAX_NODE_SIZE  << " ]" << std::endl
     << "    -f <min_flush_size>           (in elements)     [ default: " << DEFAULT_TEST_MIN_FLUSH_SIZE << " ]" << std::endl
@@ -196,14 +214,50 @@ int test(betree<uint64_t, std::string> &b,
   return 0;
 }
 
-void benchmark(betree<uint64_t, std::string> &b,
-	       uint64_t nops,
-	       uint64_t number_of_distinct_keys)
+void benchmark_upserts(betree<uint64_t, std::string> &b,
+		       uint64_t nops,
+		       uint64_t number_of_distinct_keys,
+		       uint64_t random_seed)
 {
+  uint64_t overall_timer = 0;
+  for (uint64_t j = 0; j < 100; j++) {
+    uint64_t timer = 0;
+    timer_start(timer);
+    for (uint64_t i = 0; i < nops / 100; i++) {
+      uint64_t t = rand() % number_of_distinct_keys;
+      b.update(t, std::to_string(t) + ":");
+    }
+    timer_stop(timer);
+    printf("%ld %ld %ld\n", j, nops/100, timer);
+    overall_timer += timer;
+  }
+  printf("# overall: %ld %ld\n", 100*(nops/100), overall_timer);
+}
+
+void benchmark_queries(betree<uint64_t, std::string> &b,
+		       uint64_t nops,
+		       uint64_t number_of_distinct_keys,
+		       uint64_t random_seed)
+{
+  
+  // Pre-load the tree with data
+  srand(random_seed);
   for (uint64_t i = 0; i < nops; i++) {
     uint64_t t = rand() % number_of_distinct_keys;
     b.update(t, std::to_string(t) + ":");
   }
+
+	// Now go back and query it
+  srand(random_seed);
+  uint64_t overall_timer = 0;
+	timer_start(overall_timer);
+  for (uint64_t i = 0; i < nops; i++) {
+    uint64_t t = rand() % number_of_distinct_keys;
+    b.query(t);
+  }
+	timer_stop(overall_timer);
+  printf("# overall: %ld %ld\n", nops, overall_timer);
+
 }
 
 int main(int argc, char **argv)
@@ -284,7 +338,6 @@ int main(int argc, char **argv)
 	usage(argv[0]);
 	exit(1);
       }
-      srand(random_seed);
       break;
     case 'i':
       script_infile = optarg;
@@ -299,13 +352,16 @@ int main(int argc, char **argv)
   FILE *script_input = NULL;
   FILE *script_output = NULL;
 
-  if (mode == NULL || (strcmp(mode, "test") != 0 && strcmp(mode, "benchmark") != 0)) {
+  if (mode == NULL ||
+      (strcmp(mode, "test") != 0
+       && strcmp(mode, "benchmark-upserts") != 0
+			 && strcmp(mode, "benchmark-queries") != 0)) {
     std::cerr << "Must specify a mode of \"test\" or \"benchmark\"" << std::endl;
     usage(argv[0]);
     exit(1);
   }
 
-  if (strcmp(mode, "benchmark") == 0) {
+  if (strncmp(mode, "benchmark", strlen("benchmark")) == 0) {
     if (script_infile) {
       std::cerr << "Cannot specify an input script in benchmark mode" << std::endl;
       usage(argv[0]);
@@ -352,8 +408,10 @@ int main(int argc, char **argv)
 
   if (strcmp(mode, "test") == 0) 
     test(b, nops, number_of_distinct_keys, script_input, script_output);
-  else
-    benchmark(b, nops, number_of_distinct_keys);
+  else if (strcmp(mode, "benchmark-upserts") == 0)
+    benchmark_upserts(b, nops, number_of_distinct_keys, random_seed);
+  else if (strcmp(mode, "benchmark-queries") == 0)
+    benchmark_queries(b, nops, number_of_distinct_keys, random_seed);
   
   if (script_input)
     fclose(script_input);
