@@ -1,6 +1,7 @@
-CXXFLAGS=-Wall -std=c++11 -g -O3 
-#CXXFLAGS=-Wall -std=c++11 -g -pg
+#CXXFLAGS=-Wall -std=c++11 -g -O3 
+CXXFLAGS=-Wall -std=c++11 -g -pg -no-pie
 #CXXFLAGS=-Wall -std=c++11 -g -pg -DDEBUG
+LDFLAGS=-lboost_serialization
 CC=g++
 
 test: test.cpp betree.hpp swap_space.o backing_store.o

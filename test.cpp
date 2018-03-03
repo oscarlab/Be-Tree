@@ -231,7 +231,10 @@ void benchmark_upserts(betree<uint64_t, std::string> &b,
     printf("%ld %ld %ld\n", j, nops/100, timer);
     overall_timer += timer;
   }
-  printf("# overall: %ld %ld\n", 100*(nops/100), overall_timer);
+  printf("# overall: %ld upserts in %ld microsecs (%ld upserts/sec)\n",
+				 100*(nops/100),
+				 overall_timer,
+				 1000000 * (100*(nops/100)) / overall_timer);
 }
 
 void benchmark_queries(betree<uint64_t, std::string> &b,
@@ -256,7 +259,10 @@ void benchmark_queries(betree<uint64_t, std::string> &b,
     b.query(t);
   }
 	timer_stop(overall_timer);
-  printf("# overall: %ld %ld\n", nops, overall_timer);
+  printf("# overall: %ld queries in %ld microsecs (%ld queries/sec)\n",
+				 nops,
+				 overall_timer,
+				 1000000 * nops / overall_timer);
 
 }
 

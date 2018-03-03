@@ -1,51 +1,5 @@
 #include "swap_space.hpp"
 
-void serialize(std::iostream &fs, serialization_context &context, uint64_t x)
-{
-  fs << x << " ";
-  assert(fs.good());
-}
-
-void deserialize(std::iostream &fs, serialization_context &context, uint64_t &x)
-{
-  fs >> x;
-  assert(fs.good());
-}
-
-void serialize(std::iostream &fs, serialization_context &context, int64_t x)
-{
-  fs << x << " ";
-  assert(fs.good());
-}
-
-void deserialize(std::iostream &fs, serialization_context &context, int64_t &x)
-{
-  fs >> x;
-  assert(fs.good());
-}
-
-void serialize(std::iostream &fs, serialization_context &context, std::string x)
-{
-  fs << x.size() << ",";
-  assert(fs.good());
-  fs.write(x.data(), x.size());
-  assert(fs.good());
-}
-
-void deserialize(std::iostream &fs, serialization_context &context, std::string &x)
-{
-  size_t length;
-  char comma;
-  fs >> length >> comma;
-  assert(fs.good());
-  char *buf = new char[length];
-  assert(buf);
-  fs.read(buf, length);
-  assert(fs.good());
-  x = std::string(buf, length);
-  delete buf;
-}
-
 bool swap_space::cmp_by_last_access(swap_space::object *a, swap_space::object *b) {
   return a->last_access < b->last_access;
 }
@@ -57,7 +11,9 @@ swap_space::swap_space(backing_store *bs, uint64_t n) :
   lru_pqueue(cmp_by_last_access)
 {}
 
-swap_space::object::object(swap_space *sspace, serializable * tgt) {
+swap_space::object::object(swap_space *sspace, void * tgt,
+													 swap_space::object_writer write_ob,
+													 swap_space::object_deleter delete_ob) {
   target = tgt;
   id = sspace->next_id++;
   bsid = 0;
@@ -66,6 +22,8 @@ swap_space::object::object(swap_space *sspace, serializable * tgt) {
   last_access = sspace->next_access_time++;
   target_is_dirty = true;
   pincount = 0;
+	write_obj = write_ob;
+	delete_obj = delete_ob;
 }
 
 void swap_space::set_cache_size(uint64_t sz) {
@@ -87,9 +45,11 @@ void swap_space::write_back(swap_space::object *obj)
   // In the future, we may also use this to implement in-memory
   // evictions, i.e. where we first "evict" an object by
   // compressing it and keeping the compressed version in memory.
-  serialization_context ctxt(*this);
+  serialization_context ctxt(this);
   std::stringstream sstream;
-  serialize(sstream, ctxt, *obj->target);
+	oarchive_t ar(sstream);
+	ar.template get_helper<serialization_context>(&ar) = ctxt;
+	obj->write_obj(ar, obj->target);
   obj->is_leaf = ctxt.is_leaf;
 
   if (obj->target_is_dirty) {
@@ -111,16 +71,16 @@ void swap_space::maybe_evict_something(void)
     object *obj = NULL;
     for (auto it = lru_pqueue.begin(); it != lru_pqueue.end(); ++it)
       if ((*it)->pincount == 0) {
-	obj = *it;
-	break;
+				obj = *it;
+				break;
       }
     if (obj == NULL)
       return;
     lru_pqueue.erase(obj);
-
+		
     write_back(obj);
     
-    delete obj->target;
+    obj->delete_obj(obj->target);
     obj->target = NULL;
     current_in_memory_objects--;
   }
