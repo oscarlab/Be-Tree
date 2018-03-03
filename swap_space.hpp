@@ -1,11 +1,6 @@
 // A scheme for transparently swapping data structures in and out of
 // memory.
 
-// WARNING: this is very incomplete.  It's just enough functionality
-//          for the betree.cpp.  In particular, the current system
-//          does not handle cycles in the pointer graph or pointers
-//          into the middle of objects (such as into an array).
-
 // The goal of this code is to enable users to write complex in-memory
 // data structures and have a separate layer (i.e. this code) manage
 // I/O.  Users should be able to define their data structures as they
@@ -56,25 +51,17 @@
 // write nice, clean, type-safe, well-encapsulated code and everything
 // should work just fine.
 
-// Objects managed by this system must be sub-types of class
-// serializable.  This basically defines two methods for serializing
-// and deserializing the object.  See the betree for examples of
-// implementing these methods.  We provide default implementations for
-// a few basic types and STL containers.  Feel free to add more and
-// submit patches as you need them.
+// This system uses boost serialization to read and write objects on
+// disk.  Thus all the objects to be swapped must be serializable
+// using boost serialization.
 
-// The current implementation serializes to a textual file format.
-// This is just a convenience.  It would be nice to be able to swap in
-// different formats.
 
 #ifndef SWAP_SPACE_HPP
 #define SWAP_SPACE_HPP
 
 #include <cstdint>
 #include <unordered_map>
-#include <map>
 #include <set>
-#include <functional>
 #include <sstream>
 #include <cassert>
 #include <boost/archive/binary_oarchive.hpp>

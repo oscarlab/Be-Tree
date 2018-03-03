@@ -50,13 +50,11 @@
 // clean in-memory node only requires a write-back, whereas flushing
 // to an on-disk node requires reading it in and writing it out.
 
-#include <map>
-#include <vector>
+
+#include <cstdint>
 #include <cassert>
 #include <boost/serialization/map.hpp>
-
 #include "swap_space.hpp"
-#include "backing_store.hpp"
 
 ////////////////// Upserts
 
@@ -196,6 +194,7 @@ private:
     node_pointer child;
     uint64_t child_size;
   };
+	
   typedef typename std::map<Key, child_info> pivot_map;
   typedef typename std::map<MessageKey<Key>, Message<Value> > message_map;
     
