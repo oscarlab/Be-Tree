@@ -167,12 +167,14 @@ bool operator==(const Message<Value> &a, const Message<Value> &b) {
 #define DEFAULT_MIN_FLUSH_SIZE (DEFAULT_MAX_NODE_SIZE / 16ULL)
 
 
-template<class Key, class Value> class betree {
+template<class Key, class Value, class CacheManager=lru_cache_manager>
+class betree {
 private:
 
   class node;
-  // We let a swap_space handle all the I/O.
-  typedef typename swap_space::pointer<node> node_pointer;
+
+	using node_pointer = typename swap_space<CacheManager>::template pointer<node>;
+	
   class child_info {
   public:
     child_info(void)
@@ -328,7 +330,7 @@ private:
       for (int i = 0; i < num_new_leaves; i++) {
 				if (pivot_idx == pivots.end() && elt_idx == elements.end())
 					break;
-				node_pointer new_node = bet.ss->allocate(new node);
+				node_pointer new_node = bet.ss.template allocate<node>();
 				result[pivot_idx != pivots.end() ?
 							 pivot_idx->first :
 							 elt_idx->first.key] = child_info(new_node,
@@ -617,7 +619,7 @@ private:
 		}
   };
 
-  swap_space *ss;
+  swap_space<CacheManager> &ss;
   uint64_t min_flush_size;
   uint64_t max_node_size;
   uint64_t min_node_size;
@@ -626,7 +628,7 @@ private:
   Value default_value;
   
 public:
-  betree(swap_space *sspace,
+  betree(swap_space<CacheManager> &sspace,
 				 uint64_t maxnodesize = DEFAULT_MAX_NODE_SIZE,
 				 uint64_t minnodesize = DEFAULT_MAX_NODE_SIZE / 4,
 				 uint64_t minflushsize = DEFAULT_MIN_FLUSH_SIZE) :
@@ -635,7 +637,7 @@ public:
     max_node_size(maxnodesize),
     min_node_size(minnodesize)
   {
-    root = ss->allocate(new node);
+    root = ss.template allocate<node>();
   }
 
   // Insert the specified message and handle a split of the root if it
@@ -646,7 +648,7 @@ public:
     tmp[MessageKey<Key>(k, next_timestamp++)] = Message<Value>(opcode, v);
     pivot_map new_nodes = root->flush(*this, tmp);
     if (new_nodes.size() > 0) {
-      root = ss->allocate(new node);
+      root = ss.template allocate<node>();
       root->pivots = new_nodes;
     }
   }

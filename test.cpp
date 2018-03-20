@@ -68,11 +68,11 @@ int next_command(FILE *input, int *op, uint64_t *arg)
   return 0;
 }
 
-template<class Key, class Value>
-void do_scan(typename betree<Key, Value>::iterator &betit,
-	     typename std::map<Key, Value>::iterator &refit,
-	     betree<Key, Value> &b,
-	     typename std::map<Key, Value> &reference)
+template<class Key, class Value, class CacheManager>
+	void do_scan(typename betree<Key, Value, CacheManager>::iterator &betit,
+							 typename std::map<Key, Value>::iterator &refit,
+							 betree<Key, Value, CacheManager> &b,
+							 typename std::map<Key, Value> &reference)
 {
   while (refit != reference.end()) {
     assert(betit != b.end());
@@ -120,10 +120,10 @@ void usage(char *name)
 }
 
 int test(betree<uint64_t, std::string> &b,
-	 uint64_t nops,
-	 uint64_t number_of_distinct_keys,
-	 FILE *script_input,
-	 FILE *script_output)
+				 uint64_t nops,
+				 uint64_t number_of_distinct_keys,
+				 FILE *script_input,
+				 FILE *script_output)
 {
   std::map<uint64_t, std::string> reference;
 
@@ -133,9 +133,9 @@ int test(betree<uint64_t, std::string> &b,
     if (script_input) {
       int r = next_command(script_input, &op, &t);
       if (r == EOF)
-	exit(0);
+				exit(0);
       else if (r < 0)
-	exit(4);
+				exit(4);
     } else {
       op = rand() % 7;
       t = rand() % number_of_distinct_keys;
@@ -144,13 +144,13 @@ int test(betree<uint64_t, std::string> &b,
     switch (op) {
     case 0: // insert
       if (script_output)
-	fprintf(script_output, "Inserting %lu\n", t);
+				fprintf(script_output, "Inserting %lu\n", t);
       b.insert(t, std::to_string(t) + ":");
       reference[t] = std::to_string(t) + ":";
       break;
     case 1: // update
       if (script_output)
-	fprintf(script_output, "Updating %lu\n", t);
+				fprintf(script_output, "Updating %lu\n", t);
       b.update(t, std::to_string(t) + ":");
       if (reference.count(t) > 0)
       	reference[t] += std::to_string(t) + ":";
@@ -159,49 +159,49 @@ int test(betree<uint64_t, std::string> &b,
       break;
     case 2: // delete
       if (script_output)
-	fprintf(script_output, "Deleting %lu\n", t);
+				fprintf(script_output, "Deleting %lu\n", t);
       b.erase(t);
       reference.erase(t);
       break;
     case 3: // query
       try {
-	std::string bval = b.query(t);
-	assert(reference.count(t) > 0);
-	std::string rval = reference[t];
-	assert(bval == rval);
-	if (script_output)
-	  fprintf(script_output, "Query %lu -> %s\n", t, bval.c_str());
+				std::string bval = b.query(t);
+				assert(reference.count(t) > 0);
+				std::string rval = reference[t];
+				assert(bval == rval);
+				if (script_output)
+					fprintf(script_output, "Query %lu -> %s\n", t, bval.c_str());
       } catch (std::out_of_range e) {
-	if (script_output)
-	  fprintf(script_output, "Query %lu -> DNE\n", t);
-	assert(reference.count(t) == 0);
+				if (script_output)
+					fprintf(script_output, "Query %lu -> DNE\n", t);
+				assert(reference.count(t) == 0);
       }
       break;
     case 4: // full scan
       {
-	if (script_output)
-	  fprintf(script_output, "Full_scan 0\n");
-	auto betit = b.begin();
-	auto refit = reference.begin();
-	do_scan(betit, refit, b, reference);
+				if (script_output)
+					fprintf(script_output, "Full_scan 0\n");
+				auto betit = b.begin();
+				auto refit = reference.begin();
+				do_scan(betit, refit, b, reference);
       }
       break;
     case 5: // lower-bound scan
       {
-	if (script_output)
-	  fprintf(script_output, "Lower_bound_scan %lu\n", t);
-	auto betit = b.lower_bound(t);
-	auto refit = reference.lower_bound(t);
-	do_scan(betit, refit, b, reference);
+				if (script_output)
+					fprintf(script_output, "Lower_bound_scan %lu\n", t);
+				auto betit = b.lower_bound(t);
+				auto refit = reference.lower_bound(t);
+				do_scan(betit, refit, b, reference);
       }
       break;
     case 6: // scan
       {
-	if (script_output)
-	  fprintf(script_output, "Upper_bound_scan %lu\n", t);
-	auto betit = b.upper_bound(t);
-	auto refit = reference.upper_bound(t);
-	do_scan(betit, refit, b, reference);
+				if (script_output)
+					fprintf(script_output, "Upper_bound_scan %lu\n", t);
+				auto betit = b.upper_bound(t);
+				auto refit = reference.upper_bound(t);
+				do_scan(betit, refit, b, reference);
       }
       break;
     default:
@@ -409,8 +409,9 @@ int main(int argc, char **argv)
   ////////////////////////////////////////////////////////
   
   one_file_per_object_backing_store ofpobs(backing_store_dir);
-  swap_space sspace(&ofpobs, cache_size);
-  betree<uint64_t, std::string> b(&sspace, max_node_size, min_flush_size);
+	lru_cache_manager cm(cache_size);
+  swap_space<lru_cache_manager> sspace(ofpobs, cm);
+  betree<uint64_t, std::string> b(sspace, max_node_size, min_flush_size);
 
   if (strcmp(mode, "test") == 0) 
     test(b, nops, number_of_distinct_keys, script_input, script_output);

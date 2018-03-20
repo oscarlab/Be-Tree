@@ -60,364 +60,392 @@
 #define SWAP_SPACE_HPP
 
 #include <cstdint>
-#include <unordered_map>
 #include <set>
 #include <sstream>
 #include <cassert>
+#include <boost/serialization/unordered_map.hpp>
 #include <boost/archive/binary_oarchive.hpp>
 #include <boost/archive/binary_iarchive.hpp>
 #include "backing_store.hpp"
+#include "cache_manager.hpp"
 #include "debug.hpp"
-
-class swap_space;
 
 typedef boost::archive::binary_oarchive oarchive_t;
 typedef boost::archive::binary_iarchive iarchive_t;
 
+template <class CacheManager=lru_cache_manager>
+class swap_space;
+
+template <class CacheManager>
+class base_object;
+
+template <class CacheManager>
+using refcount_map
+= std::unordered_map<base_object<CacheManager> *, uint64_t>;
+
+template <class CacheManager>
 class serialization_context {
 public:
-  serialization_context(void) : ss(NULL), is_leaf(true) {}
-  serialization_context(swap_space *sspace) :
-    ss(sspace),
-    is_leaf(true)
-  {}
-  swap_space *ss;
-  bool is_leaf;
+	serialization_context(void) : ss(NULL) {}
+	serialization_context(swap_space<CacheManager> *sspace, refcount_map<CacheManager> & refcnts) :
+		ss(sspace),
+		refcounts(refcnts)
+	{}
+	swap_space<CacheManager> *ss;
+	refcount_map<CacheManager> refcounts;	
 };
 
-class swap_space {
+template <class CacheManager>
+class base_object : public reference_to_cacheable_object<CacheManager> {
 public:
-  swap_space(backing_store *bs, uint64_t n);
 
-  template<class Referent> class pointer;
+	base_object(swap_space<CacheManager> *sspace,
+							void *tgt)
+		: id(sspace->next_id++),
+			target(tgt),
+			ss(sspace),
+			bsid(0),
+			refcount(0),
+			isleaf(false),
+			pincount(0),
+			isdirty(true)
+	{
+		ss->objects[id] = this;
+		ss->cache_manager.note_birth(*this);
+	}
 
-  template<class Referent>
-  pointer<Referent> allocate(Referent * tgt) {
-    return pointer<Referent>(this, tgt);
-  }
+	~base_object(void) {
+		if (id)
+			ss->objects.erase(id);
+	}
+	
+	// Loads the target if necessary
+	void * get_target(bool dirty) {
+		if (!target) {
+			refcount_map<CacheManager> refcounts;
+			std::iostream * in = ss->backstore.get(bsid);
+			iarchive_t ar(*in);
+      serialization_context<CacheManager> ctxt(ss, refcounts);
+			ar.template get_helper<serialization_context<CacheManager> >(&ar) = ctxt;
+			read_target(ar);
+      ss->backstore.put(in);
+			isleaf = (refcounts.size() == 0);
+			ss->cache_manager.note_load(*this);
+		}
+		if (dirty)
+			ss->cache_manager.note_write(*this);
+		else
+			ss->cache_manager.note_read(*this);
+		return target;
+	}
 
-  // This pins an object in memory for the duration of a member
-  // access.  It's sort of an instance of the "resource aquisition is
-  // initialization" paradigm.
-  template<class Referent>
-  class pin {
-  public:
-    const Referent * operator->(void) const {
-      assert(ss->objects.count(target) > 0);
-      debug(std::cout << "Accessing (constly) " << target
-	    << " (" << ss->objects[target]->target << ")" << std::endl);
-      access(target, false);
-      return (const Referent *)ss->objects[target]->target;
-    }
+	void ref(void) {
+		refcount++;
+	}
+	
+	void unref(void) {
+		refcount--;
+		// FIXME: garbage collection
+	}
+	
+	void pin(void) {
+		pincount++;
+	}
 
-    Referent * operator->(void) {
-      assert(ss->objects.count(target) > 0);
-      debug(std::cout << "Accessing " << target
-	    << " (" << ss->objects[target]->target << ")" << std::endl);
-      access(target, true);
-      return (Referent *)ss->objects[target]->target;
-    }
+	void unpin(void) {
+		pincount--;
+		// Technically, we should consider evicting things at this point,
+		// but it's kind of expensive, so we skip it.
+	}
 
-    pin(const pointer<Referent> *p)
-      : ss(NULL),
-				target(0)
-    {
-      dopin(p->ss, p->target);
-    }
+	void write_object(std::iostream & strm, refcount_map<CacheManager> & refcounts) {
+		serialization_context<CacheManager> header_ctxt(ss, refcounts);
+		oarchive_t header_archive(strm);
+		header_archive.template
+			get_helper<serialization_context<CacheManager> >(&header_archive) = header_ctxt;
+		write_target(header_archive);
+	}
 
-    pin(void)
-      : ss(NULL),
-				target(0)
-    {}
+	void clean(void) {
+		assert(isdirty);
 
-    ~pin(void) {
-      unpin();
-    }
-
-    pin &operator=(const pin &other) {
-      if (&other != this) {
-				unpin();
-				dopin(other.ss, other.target);
-      }
-    }
-    
-  private:
-    void unpin(void) {
-      debug(std::cout << "Unpinning " << target
-	    << " (" << ss->objects[target]->target << ")" << std::endl);
-      if (target > 0) {
-				assert(ss->objects.count(target) > 0);
-				ss->objects[target]->pincount--;
-				ss->maybe_evict_something();
-      }
-      ss = NULL;
-      target = 0;
-    }
-
-    void dopin(swap_space *newss, uint64_t newtarget) {
-      assert(ss == NULL && target == 0);
-      ss = newss;
-      target = newtarget;
-      if (target > 0) {
-				assert(ss->objects.count(target) > 0);
-				debug(std::cout << "Pinning " << target
-							<< " (" << ss->objects[target]->target << ")" << std::endl);
-				ss->objects[target]->pincount++;
-      }
-    }
-    
-    void access(uint64_t tgt, bool dirty) const {
-      assert(ss->objects.count(tgt) > 0);
-      object *obj = ss->objects[tgt];
-      ss->lru_pqueue.erase(obj);
-      obj->last_access = ss->next_access_time++;
-      ss->lru_pqueue.insert(obj);
-      obj->target_is_dirty |= dirty;
-      ss->load<Referent>(tgt);
-      ss->maybe_evict_something();
-    }
-  
-    swap_space *ss;
-    uint64_t target;
-  };
-  
-  template<class Referent>
-  class pointer {
-    friend class swap_space;
-    friend class pin<Referent>;
-    
-  public:
-    pointer(void) :
-      ss(NULL),
-      target(0)
-    {}
-    
-    pointer(const pointer &other) {
-      ss = other.ss;
-      target = other.target;
-      if (target > 0) {
-				assert(ss->objects.count(target) > 0);
-				ss->objects[target]->refcount++;
-      }
-    }
-
-    ~pointer(void) {
-      depoint();
-    }
-
-    void depoint(void) {
-      if (target == 0)
-				return;
-      assert(ss->objects.count(target) > 0);
-
-      object *obj = ss->objects[target];
-      assert(obj->refcount > 0);
-      if ((--obj->refcount) == 0) {
-				debug(std::cout << "Erasing " << target << std::endl);
-				// Load it into memory so we can recursively free stuff
-				if (obj->target == NULL) {
-					assert(obj->bsid > 0);
-					if (!obj->is_leaf) {
-						ss->load<Referent>(target);
-					} else {
-						debug(std::cout << "Skipping load of leaf " << target << std::endl);
-					}
-				}
-				ss->objects.erase(target);
-				ss->lru_pqueue.erase(obj);
-				if (obj->target)
-					obj->delete_obj(obj->target);
-				ss->current_in_memory_objects--;
-				if (obj->bsid > 0)
-					ss->backstore->deallocate(obj->bsid);
-				delete obj;
-      }
-      target = 0;
-    }
-
-    pointer & operator=(const pointer &other) {
-      if (&other != this) {
-				depoint();
-				ss = other.ss;
-				target = other.target;
-				if (target > 0) {
-					assert(ss->objects.count(target) > 0);
-					ss->objects[target]->refcount++;
-				}
-      }
-      return *this;
-    }
+		std::stringstream sstream;
+		refcount_map<CacheManager> refcounts;
+		write_object(sstream, refcounts);
 		
-    bool operator==(const pointer &other) const {
-      return ss == other.ss && target == other.target;
-    }
+    std::string buffer = sstream.str();
+    uint64_t newbsid = ss->backstore.allocate(buffer.length());
+    std::iostream *out = ss->backstore.get(newbsid);
+    out->write(buffer.data(), buffer.length());
+    ss->backstore.put(out);
+    if (bsid > 0)
+      ss->backstore.deallocate(bsid);
+    bsid = newbsid;
+		isleaf = (refcounts.size() == 0);
+		ss->cache_manager.note_clean(*this);
+  }
+	
+	reference_to_cacheable_object<CacheManager> & get_write_unit_ref(void) {
+		return *this;
+	}
 
-    bool operator!=(const pointer &other) const {
-      return !operator==(other);
-    }
-	  
-    // const Referent * operator->(void) const {
-    //   ss->access(target, false);
-    //   return ss->objects[target].target;
-    // }
+	typename CacheManager::access_info & get_access_info(void) {
+		return accessinfo;
+	}
 
-    const pin<Referent> operator->(void) const {
-      return pin<Referent>(this);
-    }
+	bool is_dirty(void) const {
+		return isdirty;
+	}
 
-    pin<Referent> operator->(void) {
-      return pin<Referent>(this);
-    }
+	bool is_pinned(void) const {
+		return pincount > 0;
+	}
 
-    pin<Referent> get_pin(void) {
-      return pin<Referent>(this);
-    }
-    
-    const pin<Referent> get_pin(void) const {
-      return pin<Referent>(this);
-    }
-    
-    bool is_in_memory(void) const {
-      assert(ss->objects.count(target) > 0);
-      return target > 0 && ss->objects[target]->target != NULL;
-    }
+	bool is_in_memory(void) const {
+		return target != NULL;
+	}
 
-    bool is_dirty(void) const {
-      assert(ss->objects.count(target) > 0);
-      return target > 0 && ss->objects[target]->target && ss->objects[target]->target_is_dirty;
-    }
+	uint64_t get_id(void) const {
+		return id;
+	}
+	
+	virtual void write_target(oarchive_t & ar) const = 0;
+	virtual void read_target(iarchive_t & ar) = 0;
 
-		template<class Archive>
-    void save(Archive & ar, const unsigned int version) const {
-			serialization_context & context
-				= ar.template get_helper<serialization_context>((void *)&ar);
-			assert(context.ss);
-      assert(target > 0);
-      assert(context.ss->objects.count(target) > 0);
-      ar & target;
-      ((pointer *)this)->target = 0;
-      context.is_leaf = false;
-    }
-    
-		template<class Archive>
-    void load(Archive &ar, const unsigned int version) {
-			serialization_context & context
-				= ar.template get_helper<serialization_context>((void *)&ar);
-			assert(context.ss);
-      assert(target == 0);
-      ss = context.ss;
-      ar & target;
-      assert(context.ss->objects.count(target) > 0);
-      // We just created a new reference to this object and
-      // invalidated the on-disk reference, so the total refcount
-      // stays the same.
-    }
+	void base_evict(void) {
+		target = NULL;
+		ss->cache_manager.note_evict(*this);
+	}
+	
+protected:
+	uint64_t                   id;
+	void                     * target;
+	swap_space<CacheManager> * ss;
+	uint64_t                   bsid;
+	uint64_t                   refcount;
+	bool                       isleaf;
+	uint64_t                   pincount;
+	bool                       isdirty;
+	typename CacheManager::access_info accessinfo;
+};
+
+template <class Referent, class CacheManager>
+class object : public base_object<CacheManager> {
+public:
+	object(swap_space<CacheManager> *sspace,
+				 void *tgt)
+		: base_object<CacheManager>(sspace, tgt)
+	{}
+
+	~object(void) {
+		assert(!base_object<CacheManager>::target);
+	}
+	
+	void evict(void) {
+		delete (Referent *)base_object<CacheManager>::target;
+		base_object<CacheManager>::base_evict();
+	}
+
+	void write_target(oarchive_t & ar) const {
+		ar & *(Referent *)base_object<CacheManager>::target;
+	}
+
+	void read_target(iarchive_t & ar) {
+		ar & *(Referent *)base_object<CacheManager>::target;
+	}
+
+};
+
+template <class CacheManager>
+class swap_space {
+	friend base_object<CacheManager>;
+public:
+  swap_space(backing_store &bs, CacheManager &cm)
+		: backstore(bs),
+			cache_manager(cm),
+			objects()
+	{}
+			
+	template<class Referent>
+	class pin {
+	public:
+		pin(void)
+			: obj(NULL)
+		{}
+	
+		pin(object<Referent, CacheManager> *o)
+			: obj(o)
+		{
+			obj->pin();
+		}
+
+		~pin(void) {
+			if (obj)
+				obj->unpin();
+		}
+
+		const Referent * operator->(void) const {
+			return (const Referent *)obj->get_target(false);
+		}
+
+		Referent * operator->(void) {
+			return (Referent *)obj->get_target(true);
+		}
+
+		pin &operator=(const pin &other) {
+			if (obj)
+				obj->unpin();
+			obj = other.obj;
+			if (obj)
+				obj->pin();
+		}
+
+		bool operator==(const pin &other) const {
+			return obj == other.obj;
+		}
+	
+		bool operator!=(const pin &other) const {
+			return !operator==(other);
+		}
+
+		bool is_in_memory(void) const {
+			return obj->is_in_memory();
+		}
+
+		bool is_dirty(void) const {
+			return obj->is_dirty();
+		}
+
+	private:
+		object<Referent, CacheManager> *obj;
+	};
+
+	template <class Referent>
+	class pointer {
+		friend swap_space;
+	public:
+		pointer(void)
+			: obj(NULL)
+		{}
+		
+		pointer(const pointer &other) {
+			if (obj)
+				obj->unref();
+			obj = other.obj;
+			if (obj)
+				obj->ref();
+		}
+
+		~pointer(void) {
+			if (obj)
+				obj->unref();
+		}
+
+		pointer & operator=(const pointer &other) {
+			if (obj)
+				obj->unref();
+			obj = other.obj;
+			if (obj)
+				obj->ref();
+			return *this;
+		}
+
+		bool operator==(const pointer &other) const {
+			return obj == other.obj;
+		}
+
+		bool operator!=(const pointer &other) const {
+			return !operator==(other);
+		}
+
+		const pin<Referent> operator->(void) const {
+			return pin<Referent>(obj);
+		}
+
+		pin<Referent> operator->(void) {
+			return pin<Referent>(obj);
+		}
+
+		pin<Referent> get_pin(void) {
+			return pin<Referent>(obj);
+		}
+
+		const pin<Referent> get_pin(void) const {
+			return pin<Referent>(obj);
+		}
+	
+		bool is_in_memory(void) const {
+			return obj->is_in_memory();
+		}
+
+		bool is_dirty(void) const {
+			return obj->is_dirty();
+		}
+
+		bool is_pinned(void) const {
+			return obj->is_pinned();
+		}
+
+		template <class Archive>
+		void save(Archive & ar, const unsigned int version) const {
+			serialization_context<CacheManager> & context
+				= ar.template get_helper<serialization_context<CacheManager> >((void *)&ar);
+			if (obj) {
+				ar & obj->get_id();
+				context.refcounts[obj]++;
+			} else {
+				ar & 0ULL;
+			}
+		}
+
+		template <class Archive>
+		void load(Archive &ar, const unsigned int version) {
+			serialization_context<CacheManager> & context
+				= ar.template get_helper<serialization_context<CacheManager> >((void *)&ar);
+			uint64_t target;
+			ar & target;
+			if (target) {
+				obj = dynamic_cast<object<Referent, CacheManager> *>(context.ss->objects[target]);
+				context.refcounts[obj]++;
+			}
+		}
 
 		BOOST_SERIALIZATION_SPLIT_MEMBER()
 
 		private:
-    swap_space *ss;
-    uint64_t target;
-
-    // Only callable through swap_space::allocate(...)
-    pointer(swap_space *sspace, Referent *tgt)
-    {
-      ss = sspace;
-      target = sspace->next_id++;
-
-      object *o = new object(sspace, tgt,
-														 &write_object<Referent>,
-														 &delete_object<Referent>);
-      assert(o != NULL);
-      target = o->id;
-      assert(ss->objects.count(target) == 0);
-      ss->objects[target] = o;
-      ss->lru_pqueue.insert(o);
-      ss->current_in_memory_objects++;
-      ss->maybe_evict_something();
-    }
-
-  };
-  
-private:
-  backing_store *backstore;  
-
-  uint64_t next_id = 1;
-  uint64_t next_access_time = 0;
-  
-	typedef void (*object_writer)(oarchive_t &, void *);
-	typedef void (*object_deleter)(void *);
-	
-  class object {
-  public:
-    
-    object(swap_space *sspace,
-					 void * tgt,
-					 object_writer write_obj,
-					 object_deleter delete_obj);
-    
-    void * target;
-    uint64_t id;
-    uint64_t bsid;
-    bool is_leaf;
-    uint64_t refcount;
-    uint64_t last_access;
-    bool target_is_dirty;
-    uint64_t pincount;
-		object_writer write_obj;
-		object_deleter delete_obj;
-  };
-
-  static bool cmp_by_last_access(object *a, object *b);
-
-	template<class Referent>
-	static void write_object(oarchive_t &ar, void * target) {
-		ar & *(Referent *)target;
-	}
-
-	template<class Referent>
-	static void delete_object(void * target) {
-		delete (Referent *)target;
-	}
+		object<Referent, CacheManager>     *obj = NULL;
 		
-	template<class Referent>
-  void load(uint64_t tgt) {
-    assert(objects.count(tgt) > 0);
-    if (objects[tgt]->target == NULL) {
-      object *obj = objects[tgt];
-      debug(std::cout << "Loading " << obj->id << std::endl);
-      std::iostream *in = backstore->get(obj->bsid);
-			Referent *r = new Referent();
-			debug(std::cout << "Created vessel" << std::endl);
-      debug(std::cout << "Creating archive" << std::endl);
-			{
-				iarchive_t ar(*in);
-				debug(std::cout << "Created archive" << std::endl);
-				serialization_context ctxt(this);
-				debug(std::cout << "Created context" << std::endl);
-				ar.template get_helper<serialization_context>(&ar) = ctxt;
-				debug(std::cout << "Stored context" << std::endl);
-				ar & *r;
-				debug(std::cout << "Deserialized!" << std::endl);
-			}
-      backstore->put(in);
-      debug(std::cout << "Put back the iostream" << std::endl);
-      obj->target = r;
-      debug(std::cout << "stored result" << std::endl);
-      current_in_memory_objects++;
-      debug(std::cout << "kept books" << std::endl);
-    }
-  }
+		// Only callable through swap_space::allocate(...)
+		pointer(object<Referent, CacheManager> *newobj)
+			: obj(newobj)
+		{
+			if (obj)
+				obj->ref();
+		}
+	};
 
-  void set_cache_size(uint64_t sz);
-  
-  void write_back(object *obj);
-  void maybe_evict_something(void);
-  
-  uint64_t max_in_memory_objects;
-  uint64_t current_in_memory_objects = 0;
-  std::unordered_map<uint64_t, object *> objects;
-  std::set<object *, bool (*)(object *, object *)> lru_pqueue;
+	// template<class Referent, typename... Args>
+	// pointer<Referent> allocate(Args... args) {
+	// 	Referent *target = new Referent(args...);
+	// 	object<Referent, CacheManager> * newobj = new object<Referent, CacheManager>(this, target);
+  //   return pointer<Referent>(newobj);
+  // }
+	
+	template <class Referent>
+	pointer<Referent> allocate(void) {
+		Referent *target = new Referent();
+		object<Referent, CacheManager> * newobj = new object<Referent, CacheManager>(this, target);
+    return pointer<Referent>(newobj);
+  }
+	
+protected:
+	backing_store &backstore;
+	CacheManager &cache_manager;
+  std::unordered_map<uint64_t, base_object<CacheManager> *> objects;
+  uint64_t next_id = 1;
 };
+
+
+
 
 #endif // SWAP_SPACE_HPP

@@ -1,6 +1,9 @@
 #include "swap_space.hpp"
 
-bool swap_space::cmp_by_last_access(swap_space::object *a, swap_space::object *b) {
+#if 0
+
+bool swap_space::object::cmp_by_last_access(const swap_space::base_object *a,
+																						const swap_space::base_object *b) {
   return a->last_access < b->last_access;
 }
 
@@ -8,22 +11,13 @@ swap_space::swap_space(backing_store *bs, uint64_t n) :
   backstore(bs),
   max_in_memory_objects(n),
   objects(),
-  lru_pqueue(cmp_by_last_access)
+  lru_pqueue(object::cmp_by_last_access)
 {}
 
-swap_space::object::object(swap_space *sspace, void * tgt,
-													 swap_space::object_writer write_ob,
-													 swap_space::object_deleter delete_ob) {
-  target = tgt;
-  id = sspace->next_id++;
-  bsid = 0;
-  is_leaf = false;
-  refcount = 1;
-  last_access = sspace->next_access_time++;
-  target_is_dirty = true;
-  pincount = 0;
-	write_obj = write_ob;
-	delete_obj = delete_ob;
+void swap_space::register_new_object(swap_space::base_object *obj) {
+	sspace->objects[obj->id] = obj;
+	sspace->lru_pqueue.insert(obj);
+	sspace->current_in_memory_objects++;
 }
 
 void swap_space::set_cache_size(uint64_t sz) {
@@ -32,57 +26,34 @@ void swap_space::set_cache_size(uint64_t sz) {
   maybe_evict_something();
 }
 
-void swap_space::write_back(swap_space::object *obj)
-{
-  assert(objects.count(obj->id) > 0);
-
-  debug(std::cout << "Writing back " << obj->id
-	<< " (" << obj->target << ") "
-	<< "with last access time " << obj->last_access << std::endl);
-
-  // This calls _serialize on all the pointers in this object,
-  // which keeps refcounts right later on when we delete them all.
-  // In the future, we may also use this to implement in-memory
-  // evictions, i.e. where we first "evict" an object by
-  // compressing it and keeping the compressed version in memory.
-  serialization_context ctxt(this);
-  std::stringstream sstream;
-	oarchive_t ar(sstream);
-	ar.template get_helper<serialization_context>(&ar) = ctxt;
-	obj->write_obj(ar, obj->target);
-  obj->is_leaf = ctxt.is_leaf;
-
-  if (obj->target_is_dirty) {
-    std::string buffer = sstream.str();
-    uint64_t bsid = backstore->allocate(buffer.length());
-    std::iostream *out = backstore->get(bsid);
-    out->write(buffer.data(), buffer.length());
-    backstore->put(out);
-    if (obj->bsid > 0)
-      backstore->deallocate(obj->bsid);
-    obj->bsid = bsid;
-    obj->target_is_dirty = false;
-  }
+swap_space::object::~object(void) {
+	// Load it into memory so we can recursively free stuff
+	if (!is_leaf()) {
+		ss->ensure_is_in_memory(this);
+	} else {
+		debug(std::cout << "Skipping load of leaf " << get_id() << std::endl);
+	}
+	if (get_target())
+		delete_target(get_target());
+	target = NULL;
+	
+	ss->objects.erase(get_id());
+	ss->lru_pqueue.erase(this);
+	ss->current_in_memory_objects--;
+	if (get_bsid() > 0) {
+		assert(!is_subobject());
+		ss->backstore->deallocate(get_bsid());
+	}
 }
 
-void swap_space::maybe_evict_something(void)
-{
-  while (current_in_memory_objects > max_in_memory_objects) {
-    object *obj = NULL;
-    for (auto it = lru_pqueue.begin(); it != lru_pqueue.end(); ++it)
-      if ((*it)->pincount == 0) {
-				obj = *it;
-				break;
-      }
-    if (obj == NULL)
-      return;
-    lru_pqueue.erase(obj);
-		
-    write_back(obj);
-    
-    obj->delete_obj(obj->target);
-    obj->target = NULL;
-    current_in_memory_objects--;
-  }
+uint64_t swap_space::object::get_id(void) const {
+	return id;
 }
 
+uint64_t swap_space::object::get_refcount(void) const {
+	return refcount;
+}
+
+ 
+
+#endif
