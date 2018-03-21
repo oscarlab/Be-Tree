@@ -117,10 +117,13 @@ public:
 		ss->objects[id] = this;
 	}
 
-	~base_object(void) {
+	virtual ~base_object(void) {
 		debug(std::cout << "called ~base_object on " << this << std::endl);
 		if (id)
 			ss->objects.erase(id);
+		if (bsid)
+			ss->backstore.deallocate(bsid);
+		ss->cache_manager.note_death(*this);
 	}
 	
 	// Loads the target if necessary
@@ -143,6 +146,7 @@ public:
 			ss->cache_manager.note_write(*this);
 		else
 			ss->cache_manager.note_read(*this);
+		isdirty = isdirty || dirty;
 		return target;
 	}
 
@@ -152,7 +156,8 @@ public:
 	
 	void unref(void) {
 		refcount--;
-		// FIXME: garbage collection
+		if (refcount == 0 && pincount == 0)
+			delete this;
 	}
 	
 	void pin(void) {
@@ -161,6 +166,8 @@ public:
 
 	void unpin(void) {
 		pincount--;
+		if (refcount == 0 && pincount == 0)
+			delete this;
 		// Technically, we should consider evicting things at this point,
 		// but it's kind of expensive, so we skip it.
 	}
@@ -190,6 +197,7 @@ public:
       ss->backstore.deallocate(bsid);
     bsid = newbsid;
 		isleaf = (refcounts.size() == 0);
+		isdirty = false;
 		ss->cache_manager.note_clean(*this);
   }
 	
@@ -246,7 +254,8 @@ public:
 	{}
 
 	~object(void) {
-		assert(!base_object<CacheManager>::target);
+		if (base_object<CacheManager>::target)
+			delete (Referent *)base_object<CacheManager>::target;
 	}
 	
 	virtual void evict(void) override {
