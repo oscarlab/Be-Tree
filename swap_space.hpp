@@ -66,12 +66,14 @@
 #include <boost/serialization/unordered_map.hpp>
 #include <boost/archive/binary_oarchive.hpp>
 #include <boost/archive/binary_iarchive.hpp>
+#include <boost/archive/text_oarchive.hpp>
+#include <boost/archive/text_iarchive.hpp>
 #include "backing_store.hpp"
 #include "cache_manager.hpp"
 #include "debug.hpp"
 
-typedef boost::archive::binary_oarchive oarchive_t;
-typedef boost::archive::binary_iarchive iarchive_t;
+typedef boost::archive::text_oarchive oarchive_t;
+typedef boost::archive::text_iarchive iarchive_t;
 
 template <class CacheManager=lru_cache_manager>
 class swap_space;
@@ -99,6 +101,8 @@ template <class CacheManager>
 class base_object : public reference_to_cacheable_object<CacheManager> {
 public:
 
+	base_object(void) = delete;
+	
 	base_object(swap_space<CacheManager> *sspace,
 							void *tgt)
 		: id(sspace->next_id++),
@@ -111,23 +115,26 @@ public:
 			isdirty(true)
 	{
 		ss->objects[id] = this;
-		ss->cache_manager.note_birth(*this);
 	}
 
 	~base_object(void) {
+		debug(std::cout << "called ~base_object on " << this << std::endl);
 		if (id)
 			ss->objects.erase(id);
 	}
 	
 	// Loads the target if necessary
 	void * get_target(bool dirty) {
+		assert(pincount);
 		if (!target) {
 			refcount_map<CacheManager> refcounts;
 			std::iostream * in = ss->backstore.get(bsid);
-			iarchive_t ar(*in);
-      serialization_context<CacheManager> ctxt(ss, refcounts);
-			ar.template get_helper<serialization_context<CacheManager> >(&ar) = ctxt;
-			read_target(ar);
+			serialization_context<CacheManager> ctxt(ss, refcounts);
+			{
+				iarchive_t ar(*in);
+				ar.template get_helper<serialization_context<CacheManager> >(&ar) = ctxt;
+				read_target(ar);
+			}
       ss->backstore.put(in);
 			isleaf = (refcounts.size() == 0);
 			ss->cache_manager.note_load(*this);
@@ -163,10 +170,11 @@ public:
 		oarchive_t header_archive(strm);
 		header_archive.template
 			get_helper<serialization_context<CacheManager> >(&header_archive) = header_ctxt;
+		debug(std::cout << "calling write_target" << std::endl);
 		write_target(header_archive);
 	}
 
-	void clean(void) {
+	void clean(void) override {
 		assert(isdirty);
 
 		std::stringstream sstream;
@@ -185,19 +193,19 @@ public:
 		ss->cache_manager.note_clean(*this);
   }
 	
-	reference_to_cacheable_object<CacheManager> & get_write_unit_ref(void) {
+	reference_to_cacheable_object<CacheManager> & get_write_unit_ref(void) override {
 		return *this;
 	}
 
-	typename CacheManager::access_info & get_access_info(void) {
+	typename CacheManager::access_info & get_access_info(void) override {
 		return accessinfo;
 	}
 
-	bool is_dirty(void) const {
+	bool is_dirty(void) const override {
 		return isdirty;
 	}
 
-	bool is_pinned(void) const {
+	bool is_pinned(void) const override {
 		return pincount > 0;
 	}
 
@@ -241,16 +249,18 @@ public:
 		assert(!base_object<CacheManager>::target);
 	}
 	
-	void evict(void) {
+	virtual void evict(void) override {
 		delete (Referent *)base_object<CacheManager>::target;
 		base_object<CacheManager>::base_evict();
 	}
 
-	void write_target(oarchive_t & ar) const {
+	virtual void write_target(oarchive_t & ar) const override {
 		ar & *(Referent *)base_object<CacheManager>::target;
 	}
 
-	void read_target(iarchive_t & ar) {
+	virtual void read_target(iarchive_t & ar) override {
+		assert(base_object<CacheManager>::target == NULL);
+		base_object<CacheManager>::target = new Referent();
 		ar & *(Referent *)base_object<CacheManager>::target;
 	}
 
@@ -435,6 +445,7 @@ public:
 	pointer<Referent> allocate(void) {
 		Referent *target = new Referent();
 		object<Referent, CacheManager> * newobj = new object<Referent, CacheManager>(this, target);
+		cache_manager.note_birth(*newobj);
     return pointer<Referent>(newobj);
   }
 	
