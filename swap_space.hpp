@@ -87,15 +87,23 @@ using refcount_map
 
 template <class CacheManager>
 class serialization_context {
-public:
-	serialization_context(void) : ss(NULL) {}
-	serialization_context(swap_space<CacheManager> *sspace, refcount_map<CacheManager> & refcnts) :
-		ss(sspace),
-		refcounts(refcnts)
+  public:
+  serialization_context(void) : ss(NULL), refcounts(NULL) {}
+  serialization_context(swap_space<CacheManager> *sspace, refcount_map<CacheManager> * refcnts)
+	: ss(sspace),
+	refcounts(refcnts)
 	{}
 	swap_space<CacheManager> *ss;
-	refcount_map<CacheManager> refcounts;	
+	refcount_map<CacheManager> * refcounts;
 };
+
+template<class CacheManager>
+void dump_refmap(refcount_map<CacheManager> &rcm) {
+  for (const auto & p : rcm) {
+    std::cout << p.first << "(" << p.first->get_id() << "):" << p.second << " ";
+  }
+  std::cout << std::endl;
+}
 
 template <class CacheManager>
 class base_object : public reference_to_cacheable_object<CacheManager> {
@@ -109,38 +117,62 @@ public:
 			target(tgt),
 			ss(sspace),
 			bsid(0),
+			ondisk_referents(),
 			refcount(0),
-			isleaf(false),
 			pincount(0),
-			isdirty(true)
+			isdirty(true),
+			dead(false)
 	{
 		ss->objects[id] = this;
 	}
 
 	virtual ~base_object(void) {
-		debug(std::cout << "called ~base_object on " << this << std::endl);
+		assert(0);
+		std::cout << "called ~base_object on " << this << "(id=" << id << ")" << std::endl;
 		if (id)
 			ss->objects.erase(id);
-		if (bsid)
+		if (bsid) {
 			ss->backstore.deallocate(bsid);
+			for (const auto & p : ondisk_referents)
+				p.first->unref(p.second);
+		}
 		ss->cache_manager.note_death(*this);
+	}
+
+
+	virtual void play_dead(void) = 0;
+	
+	void base_play_dead(void) {
+		if (id)
+		  ss->objects.erase(id);
+		if (bsid) {
+			ss->backstore.deallocate(bsid);
+			std::cout << "base_play_dead derefs: ";
+			dump_refmap(ondisk_referents);
+			for (const auto & p : ondisk_referents) {
+        p.first->unref(p.second);
+			}
+		}
+		ss->cache_manager.note_death(*this);
+		dead = true;
 	}
 	
 	// Loads the target if necessary
 	void * get_target(bool dirty) {
+		assert(!dead);
 		assert(pincount);
 		if (!target) {
 			refcount_map<CacheManager> refcounts;
 			std::iostream * in = ss->backstore.get(bsid);
-			serialization_context<CacheManager> ctxt(ss, refcounts);
+			serialization_context<CacheManager> ctxt(ss, &refcounts);
 			{
 				iarchive_t ar(*in);
 				ar.template get_helper<serialization_context<CacheManager> >(&ar) = ctxt;
 				read_target(ar);
 			}
-      ss->backstore.put(in);
-			isleaf = (refcounts.size() == 0);
+			ss->backstore.put(in);
 			ss->cache_manager.note_load(*this);
+			assert(refcounts == ondisk_referents);
 		}
 		if (dirty)
 			ss->cache_manager.note_write(*this);
@@ -150,30 +182,38 @@ public:
 		return target;
 	}
 
-	void ref(void) {
-		refcount++;
+	void ref(uint64_t amount = 1) {
+		assert(!dead);
+		refcount += amount;
 	}
 	
-	void unref(void) {
-		refcount--;
+	void unref(uint64_t amount = 1) {
+		assert(!dead);
+		if (amount > refcount)
+			std::cout << amount << " " << refcount << std::endl;
+		assert(amount <= refcount);
+		refcount -= amount;
 		if (refcount == 0 && pincount == 0)
-			delete this;
+			play_dead(); // delete this;
 	}
 	
 	void pin(void) {
+		assert(!dead);
 		pincount++;
 	}
 
 	void unpin(void) {
+		assert(!dead);
 		pincount--;
 		if (refcount == 0 && pincount == 0)
-			delete this;
+			play_dead(); // delete this;
 		// Technically, we should consider evicting things at this point,
 		// but it's kind of expensive, so we skip it.
 	}
 
 	void write_object(std::iostream & strm, refcount_map<CacheManager> & refcounts) {
-		serialization_context<CacheManager> header_ctxt(ss, refcounts);
+		assert(!dead);
+		serialization_context<CacheManager> header_ctxt(ss, &refcounts);
 		oarchive_t header_archive(strm);
 		header_archive.template
 			get_helper<serialization_context<CacheManager> >(&header_archive) = header_ctxt;
@@ -183,45 +223,64 @@ public:
 
 	void clean(void) override {
 		assert(isdirty);
+		assert(!dead);
 
 		std::stringstream sstream;
 		refcount_map<CacheManager> refcounts;
-		write_object(sstream, refcounts);
-		
-    std::string buffer = sstream.str();
-    uint64_t newbsid = ss->backstore.allocate(buffer.length());
-    std::iostream *out = ss->backstore.get(newbsid);
-    out->write(buffer.data(), buffer.length());
-    ss->backstore.put(out);
-    if (bsid > 0)
-      ss->backstore.deallocate(bsid);
-    bsid = newbsid;
-		isleaf = (refcounts.size() == 0);
+		write_object(sstream, refcounts);		
+		std::string buffer = sstream.str();
+
+		uint64_t newbsid = ss->backstore.allocate(buffer.length());
+		std::iostream *out = ss->backstore.get(newbsid);
+		out->write(buffer.data(), buffer.length());
+		ss->backstore.put(out);
+
+		std::cout << "clean reffing: ";
+		dump_refmap(refcounts);
+		for (const auto & p : refcounts) {
+      p.first->ref(p.second);
+		}
+		if (bsid > 0) {
+			std::cout << "clean unreffing: ";
+			dump_refmap(ondisk_referents);
+      for (const auto & p : ondisk_referents) {
+        p.first->unref(p.second);
+			}
+			ss->backstore.deallocate(bsid);
+		}		
+		bsid = newbsid;
+		ondisk_referents = refcounts;
 		isdirty = false;
 		ss->cache_manager.note_clean(*this);
   }
 	
 	reference_to_cacheable_object<CacheManager> & get_write_unit_ref(void) override {
+		assert(!dead);
 		return *this;
 	}
 
 	typename CacheManager::access_info & get_access_info(void) override {
+		assert(!dead);
 		return accessinfo;
 	}
 
 	bool is_dirty(void) const override {
+		assert(!dead);
 		return isdirty;
 	}
 
 	bool is_pinned(void) const override {
+		assert(!dead);
 		return pincount > 0;
 	}
 
 	bool is_in_memory(void) const {
+		assert(!dead);
 		return target != NULL;
 	}
 
 	uint64_t get_id(void) const {
+		assert(!dead);
 		return id;
 	}
 	
@@ -229,6 +288,7 @@ public:
 	virtual void read_target(iarchive_t & ar) = 0;
 
 	void base_evict(void) {
+		assert(!dead);
 		target = NULL;
 		ss->cache_manager.note_evict(*this);
 	}
@@ -238,11 +298,12 @@ protected:
 	void                     * target;
 	swap_space<CacheManager> * ss;
 	uint64_t                   bsid;
+	refcount_map<CacheManager> ondisk_referents; 
 	uint64_t                   refcount;
-	bool                       isleaf;
 	uint64_t                   pincount;
 	bool                       isdirty;
 	typename CacheManager::access_info accessinfo;
+	bool dead;
 };
 
 template <class Referent, class CacheManager>
@@ -254,20 +315,38 @@ public:
 	{}
 
 	~object(void) {
-		if (base_object<CacheManager>::target)
+		assert(0);
+		if (base_object<CacheManager>::target) {
 			delete (Referent *)base_object<CacheManager>::target;
+			base_object<CacheManager>::target = NULL;
+		}
+	}
+
+	virtual void play_dead(void) override {
+		assert(!base_object<CacheManager>::dead);
+		std::cout << "play_dead " << this << "(" << base_object<CacheManager>::id << ")" << std::endl;
+		if (base_object<CacheManager>::target) {
+			delete (Referent *)base_object<CacheManager>::target;
+			base_object<CacheManager>::target = NULL;
+		}
+		base_object<CacheManager>::base_play_dead();
 	}
 	
 	virtual void evict(void) override {
+		assert(!base_object<CacheManager>::dead);
+		assert(base_object<CacheManager>::target);
 		delete (Referent *)base_object<CacheManager>::target;
+		base_object<CacheManager>::target = NULL;
 		base_object<CacheManager>::base_evict();
 	}
 
 	virtual void write_target(oarchive_t & ar) const override {
+		assert(!base_object<CacheManager>::dead);
 		ar & *(Referent *)base_object<CacheManager>::target;
 	}
 
 	virtual void read_target(iarchive_t & ar) override {
+		assert(!base_object<CacheManager>::dead);
 		assert(base_object<CacheManager>::target == NULL);
 		base_object<CacheManager>::target = new Referent();
 		ar & *(Referent *)base_object<CacheManager>::target;
@@ -348,11 +427,11 @@ public:
 		{}
 		
 		pointer(const pointer &other) {
+			if (other.obj)
+				other.obj->ref();
 			if (obj)
 				obj->unref();
 			obj = other.obj;
-			if (obj)
-				obj->ref();
 		}
 
 		~pointer(void) {
@@ -361,11 +440,11 @@ public:
 		}
 
 		pointer & operator=(const pointer &other) {
+			if (other.obj)
+				other.obj->ref();
 			if (obj)
 				obj->unref();
 			obj = other.obj;
-			if (obj)
-				obj->ref();
 			return *this;
 		}
 
@@ -378,18 +457,22 @@ public:
 		}
 
 		const pin<Referent> operator->(void) const {
+			assert(obj);
 			return pin<Referent>(obj);
 		}
 
 		pin<Referent> operator->(void) {
+			assert(obj);
 			return pin<Referent>(obj);
 		}
 
 		pin<Referent> get_pin(void) {
+			assert(obj);
 			return pin<Referent>(obj);
 		}
 
 		const pin<Referent> get_pin(void) const {
+			assert(obj);
 			return pin<Referent>(obj);
 		}
 	
@@ -411,7 +494,7 @@ public:
 				= ar.template get_helper<serialization_context<CacheManager> >((void *)&ar);
 			if (obj) {
 				ar & obj->get_id();
-				context.refcounts[obj]++;
+				(*context.refcounts)[obj]++;
 			} else {
 				ar & 0ULL;
 			}
@@ -423,10 +506,17 @@ public:
 				= ar.template get_helper<serialization_context<CacheManager> >((void *)&ar);
 			uint64_t target;
 			ar & target;
+			object<Referent, CacheManager> *newobj = NULL;
 			if (target) {
-				obj = dynamic_cast<object<Referent, CacheManager> *>(context.ss->objects[target]);
-				context.refcounts[obj]++;
+				assert(context.ss->objects.count(target) > 0);
+				newobj = dynamic_cast<object<Referent, CacheManager> *>(context.ss->objects[target]);
+				(*context.refcounts)[newobj]++;
 			}
+			if (newobj)
+			  newobj->ref();
+			if (obj)
+			  obj->unref();
+			obj = newobj;
 		}
 
 		BOOST_SERIALIZATION_SPLIT_MEMBER()
@@ -454,8 +544,9 @@ public:
 	pointer<Referent> allocate(void) {
 		Referent *target = new Referent();
 		object<Referent, CacheManager> * newobj = new object<Referent, CacheManager>(this, target);
+		pointer<Referent> p(newobj);
 		cache_manager.note_birth(*newobj);
-    return pointer<Referent>(newobj);
+    return p;
   }
 	
 protected:
