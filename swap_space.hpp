@@ -131,8 +131,8 @@ public:
 			ss->objects.erase(id);
 		if (bsid) {
 			ss->backstore.deallocate(bsid);
-			std::cout << "~base_object derefs: ";
-			dump_refmap(ondisk_referents);
+			debug(std::cout << "~base_object derefs: ");
+			debug(dump_refmap(ondisk_referents));
 			for (const auto & p : ondisk_referents)
 				p.first->unref(p.second);
 		}
@@ -208,14 +208,14 @@ public:
 		out->write(buffer.data(), buffer.length());
 		ss->backstore.put(out);
 
-		std::cout << "clean reffing: ";
-		dump_refmap(refcounts);
+		debug(std::cout << "clean reffing: ");
+		debug(dump_refmap(refcounts));
 		for (const auto & p : refcounts) {
       p.first->ref(p.second);
 		}
 		if (bsid > 0) {
-			std::cout << "clean unreffing: ";
-			dump_refmap(ondisk_referents);
+			debug(std::cout << "clean unreffing: ");
+			debug(dump_refmap(ondisk_referents));
       for (const auto & p : ondisk_referents) {
         p.first->unref(p.second);
 			}
