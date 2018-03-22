@@ -120,46 +120,27 @@ public:
 			ondisk_referents(),
 			refcount(0),
 			pincount(0),
-			isdirty(true),
-			dead(false)
+			isdirty(true)
 	{
 		ss->objects[id] = this;
 	}
 
 	virtual ~base_object(void) {
-		assert(0);
-		std::cout << "called ~base_object on " << this << "(id=" << id << ")" << std::endl;
+		debug(std::cout << "called ~base_object on " << this << "(id=" << id << ")" << std::endl);
 		if (id)
 			ss->objects.erase(id);
 		if (bsid) {
 			ss->backstore.deallocate(bsid);
+			std::cout << "~base_object derefs: ";
+			dump_refmap(ondisk_referents);
 			for (const auto & p : ondisk_referents)
 				p.first->unref(p.second);
 		}
 		ss->cache_manager.note_death(*this);
 	}
-
-
-	virtual void play_dead(void) = 0;
-	
-	void base_play_dead(void) {
-		if (id)
-		  ss->objects.erase(id);
-		if (bsid) {
-			ss->backstore.deallocate(bsid);
-			std::cout << "base_play_dead derefs: ";
-			dump_refmap(ondisk_referents);
-			for (const auto & p : ondisk_referents) {
-        p.first->unref(p.second);
-			}
-		}
-		ss->cache_manager.note_death(*this);
-		dead = true;
-	}
 	
 	// Loads the target if necessary
 	void * get_target(bool dirty) {
-		assert(!dead);
 		assert(pincount);
 		if (!target) {
 			refcount_map<CacheManager> refcounts;
@@ -183,36 +164,29 @@ public:
 	}
 
 	void ref(uint64_t amount = 1) {
-		assert(!dead);
 		refcount += amount;
 	}
 	
 	void unref(uint64_t amount = 1) {
-		assert(!dead);
-		if (amount > refcount)
-			std::cout << amount << " " << refcount << std::endl;
 		assert(amount <= refcount);
 		refcount -= amount;
 		if (refcount == 0 && pincount == 0)
-			play_dead(); // delete this;
+			delete this;
 	}
 	
 	void pin(void) {
-		assert(!dead);
 		pincount++;
 	}
 
 	void unpin(void) {
-		assert(!dead);
 		pincount--;
 		if (refcount == 0 && pincount == 0)
-			play_dead(); // delete this;
+			delete this;
 		// Technically, we should consider evicting things at this point,
 		// but it's kind of expensive, so we skip it.
 	}
 
 	void write_object(std::iostream & strm, refcount_map<CacheManager> & refcounts) {
-		assert(!dead);
 		serialization_context<CacheManager> header_ctxt(ss, &refcounts);
 		oarchive_t header_archive(strm);
 		header_archive.template
@@ -223,7 +197,6 @@ public:
 
 	void clean(void) override {
 		assert(isdirty);
-		assert(!dead);
 
 		std::stringstream sstream;
 		refcount_map<CacheManager> refcounts;
@@ -255,32 +228,26 @@ public:
   }
 	
 	reference_to_cacheable_object<CacheManager> & get_write_unit_ref(void) override {
-		assert(!dead);
 		return *this;
 	}
 
 	typename CacheManager::access_info & get_access_info(void) override {
-		assert(!dead);
 		return accessinfo;
 	}
 
 	bool is_dirty(void) const override {
-		assert(!dead);
 		return isdirty;
 	}
 
 	bool is_pinned(void) const override {
-		assert(!dead);
 		return pincount > 0;
 	}
 
 	bool is_in_memory(void) const {
-		assert(!dead);
 		return target != NULL;
 	}
 
 	uint64_t get_id(void) const {
-		assert(!dead);
 		return id;
 	}
 	
@@ -288,8 +255,6 @@ public:
 	virtual void read_target(iarchive_t & ar) = 0;
 
 	void base_evict(void) {
-		assert(!dead);
-		target = NULL;
 		ss->cache_manager.note_evict(*this);
 	}
 	
@@ -303,7 +268,6 @@ protected:
 	uint64_t                   pincount;
 	bool                       isdirty;
 	typename CacheManager::access_info accessinfo;
-	bool dead;
 };
 
 template <class Referent, class CacheManager>
@@ -315,25 +279,11 @@ public:
 	{}
 
 	~object(void) {
-		assert(0);
-		if (base_object<CacheManager>::target) {
+		if (base_object<CacheManager>::target)
 			delete (Referent *)base_object<CacheManager>::target;
-			base_object<CacheManager>::target = NULL;
-		}
 	}
 
-	virtual void play_dead(void) override {
-		assert(!base_object<CacheManager>::dead);
-		std::cout << "play_dead " << this << "(" << base_object<CacheManager>::id << ")" << std::endl;
-		if (base_object<CacheManager>::target) {
-			delete (Referent *)base_object<CacheManager>::target;
-			base_object<CacheManager>::target = NULL;
-		}
-		base_object<CacheManager>::base_play_dead();
-	}
-	
 	virtual void evict(void) override {
-		assert(!base_object<CacheManager>::dead);
 		assert(base_object<CacheManager>::target);
 		delete (Referent *)base_object<CacheManager>::target;
 		base_object<CacheManager>::target = NULL;
@@ -341,12 +291,10 @@ public:
 	}
 
 	virtual void write_target(oarchive_t & ar) const override {
-		assert(!base_object<CacheManager>::dead);
 		ar & *(Referent *)base_object<CacheManager>::target;
 	}
 
 	virtual void read_target(iarchive_t & ar) override {
-		assert(!base_object<CacheManager>::dead);
 		assert(base_object<CacheManager>::target == NULL);
 		base_object<CacheManager>::target = new Referent();
 		ar & *(Referent *)base_object<CacheManager>::target;
@@ -452,7 +400,16 @@ public:
 			return obj == other.obj;
 		}
 
+		// Allow for checking whether ptr == NULL
+		bool operator==(const void *other) const {
+			return other == NULL && obj == NULL;
+		}
+
 		bool operator!=(const pointer &other) const {
+			return !operator==(other);
+		}
+
+		bool operator!=(const void *other) const {
 			return !operator==(other);
 		}
 
