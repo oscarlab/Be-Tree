@@ -72,8 +72,8 @@
 #include "cache_manager.hpp"
 #include "debug.hpp"
 
-typedef boost::archive::text_oarchive oarchive_t;
-typedef boost::archive::text_iarchive iarchive_t;
+typedef boost::archive::binary_oarchive oarchive_t;
+typedef boost::archive::binary_iarchive iarchive_t;
 
 template <class CacheManager=lru_cache_manager>
 class swap_space;
@@ -89,7 +89,8 @@ template <class CacheManager>
 class serialization_context {
   public:
   serialization_context(void) : ss(NULL), refcounts(NULL) {}
-  serialization_context(swap_space<CacheManager> *sspace, refcount_map<CacheManager> * refcnts)
+  serialization_context(swap_space<CacheManager> *sspace, 
+	                      refcount_map<CacheManager> * refcnts)
 	: ss(sspace),
 	refcounts(refcnts)
 	{}
