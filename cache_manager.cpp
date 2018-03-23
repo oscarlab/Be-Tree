@@ -11,6 +11,10 @@ lru_cache_manager::lru_cache_manager(uint64_t cache_size)
 		next_access_time(update_interval+1)
 {}
 
+lru_cache_manager::~lru_cache_manager(void) {
+	set_cache_size(0);
+}
+
 void lru_cache_manager::set_cache_size(uint64_t sz) {
 	max_in_memory_objects = sz;
 	maybe_evict_something();
@@ -98,6 +102,14 @@ void lru_cache_manager::maybe_evict_something(void) {
 		if (best->is_dirty())
 			best->clean();
 		best->evict();
+	}
+}
+
+void lru_cache_manager::checkpoint(void) {
+	for (auto * ref : cache) {
+		lru_cache_manager::reference & write_unit_ref = ref->get_write_unit_ref();
+		if (write_unit_ref.is_dirty())
+			write_unit_ref.clean();
 	}
 }
 

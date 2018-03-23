@@ -20,9 +20,11 @@ public:
 class lru_cache_manager {
 public:
 	lru_cache_manager(uint64_t cache_size);
-
+	~lru_cache_manager(void);
+	
 	void set_cache_size(uint64_t sz);
-
+	void checkpoint(void);
+	
 	typedef uint64_t access_info;
 	typedef reference_to_cacheable_object<lru_cache_manager> reference;
 

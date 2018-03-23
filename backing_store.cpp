@@ -46,3 +46,21 @@ void one_file_per_object_backing_store::put(std::iostream *ios)
   delete ios;
   delete fb;
 }
+
+void one_file_per_object_backing_store::set_root(uint64_t id) {
+  std::string filename = root + "/0";
+	std::fstream rootstream(filename, std::fstream::out);
+	assert(rootstream.good());
+	rootstream << id;
+}
+
+uint64_t one_file_per_object_backing_store::get_root(void) {
+  std::string filename = root + "/0";
+	std::fstream rootstream(filename, std::fstream::in);
+	if(rootstream.good()) {
+		uint64_t id = 0;
+		rootstream >> id;
+		return id;
+	}
+	return 0;
+}

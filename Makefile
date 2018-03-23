@@ -1,5 +1,5 @@
-CXXFLAGS=-Wall -std=c++11 -g -O3 
-#CXXFLAGS=-Wall -std=c++11 -g -pg
+#CXXFLAGS=-Wall -std=c++11 -g -O3 
+CXXFLAGS=-Wall -std=c++11 -g -pg
 #CXXFLAGS=-Wall -std=c++11 -g -pg -DDEBUG
 
 LDFLAGS=-lboost_serialization

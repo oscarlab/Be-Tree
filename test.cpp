@@ -215,13 +215,16 @@ int test(betree<uint64_t, std::string> &b,
 }
 
 void benchmark_upserts(betree<uint64_t, std::string> &b,
-		       uint64_t nops,
-		       uint64_t number_of_distinct_keys,
-		       uint64_t random_seed)
+											 swap_space<lru_cache_manager> &ss,
+											 uint64_t nops,
+											 uint64_t number_of_distinct_keys,
+											 uint64_t random_seed)
 {
   uint64_t overall_timer = 0;
+	uint64_t timer;
+	
   for (uint64_t j = 0; j < 100; j++) {
-    uint64_t timer = 0;
+    timer = 0;
     timer_start(timer);
     for (uint64_t i = 0; i < nops / 100; i++) {
       uint64_t t = rand() % number_of_distinct_keys;
@@ -231,6 +234,12 @@ void benchmark_upserts(betree<uint64_t, std::string> &b,
     printf("%ld %ld %ld\n", j, nops/100, timer);
     overall_timer += timer;
   }
+	printf("Checkpointing\n");
+	timer_start(timer = 0);
+	ss.checkpoint();
+	timer_stop(timer);
+	printf("Checkpoint time: %ld microsecs\n", timer);
+	overall_timer += timer;
   printf("# overall: %ld upserts in %ld microsecs (%ld upserts/sec)\n",
 				 100*(nops/100),
 				 overall_timer,
@@ -416,7 +425,7 @@ int main(int argc, char **argv)
   if (strcmp(mode, "test") == 0) 
     test(b, nops, number_of_distinct_keys, script_input, script_output);
   else if (strcmp(mode, "benchmark-upserts") == 0)
-    benchmark_upserts(b, nops, number_of_distinct_keys, random_seed);
+    benchmark_upserts(b, sspace, nops, number_of_distinct_keys, random_seed);
   else if (strcmp(mode, "benchmark-queries") == 0)
     benchmark_queries(b, nops, number_of_distinct_keys, random_seed);
   

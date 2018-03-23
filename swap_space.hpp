@@ -63,6 +63,7 @@
 #include <set>
 #include <sstream>
 #include <cassert>
+#include <boost/serialization/base_object.hpp>
 #include <boost/serialization/unordered_map.hpp>
 #include <boost/archive/binary_oarchive.hpp>
 #include <boost/archive/binary_iarchive.hpp>
@@ -72,8 +73,8 @@
 #include "cache_manager.hpp"
 #include "debug.hpp"
 
-typedef boost::archive::binary_oarchive oarchive_t;
-typedef boost::archive::binary_iarchive iarchive_t;
+typedef boost::archive::text_oarchive oarchive_t;
+typedef boost::archive::text_iarchive iarchive_t;
 
 template <class CacheManager=lru_cache_manager>
 class swap_space;
@@ -84,6 +85,11 @@ class base_object;
 template <class CacheManager>
 using refcount_map
 = std::unordered_map<base_object<CacheManager> *, uint64_t>;
+
+template <class CacheManager>
+using unresolved_link_map
+= std::unordered_map<uint64_t, 
+                     std::unordered_map<base_object<CacheManager> *, uint64_t> >;
 
 template <class CacheManager>
 class serialization_context {
@@ -107,7 +113,19 @@ void dump_refmap(refcount_map<CacheManager> &rcm) {
 }
 
 template <class CacheManager>
+class checkpoint_context {
+  public:
+  checkpoint_context(void) : ss(NULL) {}
+  checkpoint_context(swap_space<CacheManager> *sspace)
+	: ss(sspace)
+	{}
+	swap_space<CacheManager> *ss;
+	unresolved_link_map<CacheManager> unresolved_links;
+};
+
+template <class CacheManager>
 class base_object : public reference_to_cacheable_object<CacheManager> {
+	friend class swap_space<CacheManager>;
 public:
 
 	base_object(void) = delete;
@@ -128,16 +146,18 @@ public:
 
 	virtual ~base_object(void) {
 		debug(std::cout << "called ~base_object on " << this << "(id=" << id << ")" << std::endl);
+		if (refcount == 0) {
+			if (bsid) {
+				ss->backstore.deallocate(bsid);
+				debug(std::cout << "~base_object derefs: ");
+				debug(dump_refmap(ondisk_referents));
+				for (const auto & p : ondisk_referents)
+					p.first->unref(p.second);
+			}
+			ss->cache_manager.note_death(*this);
+		}
 		if (id)
 			ss->objects.erase(id);
-		if (bsid) {
-			ss->backstore.deallocate(bsid);
-			debug(std::cout << "~base_object derefs: ");
-			debug(dump_refmap(ondisk_referents));
-			for (const auto & p : ondisk_referents)
-				p.first->unref(p.second);
-		}
-		ss->cache_manager.note_death(*this);
 	}
 	
 	// Loads the target if necessary
@@ -258,6 +278,39 @@ public:
 	void base_evict(void) {
 		ss->cache_manager.note_evict(*this);
 	}
+
+	template<class Archive>
+	void save(Archive &ar, const unsigned int version) const {
+		ar & id;
+		ar & bsid;
+		ar & ondisk_referents.size();
+		for (const auto & p : ondisk_referents) {
+			ar & p.first->id;
+			ar & p.second;
+		}
+		ar & refcount;
+	}
+
+	template<class Archive>
+	void load(Archive &ar, const unsigned int version) {
+		checkpoint_context<CacheManager> &cc 
+		= ar.template get_helper<checkpoint_context<CacheManager> >(&ar);
+		ar & id;
+		ar & bsid;
+		uint64_t nreferents;
+		ar & nreferents;
+		for (uint64_t i = 0; i < nreferents; i++) {
+			uint64_t rid, rcnt;
+			ar & rid;
+			ar & rcnt;
+			cc.unresolved_links[rid][this] = rcnt;
+		}
+		ar & refcount;
+	}
+
+	BOOST_SERIALIZATION_SPLIT_MEMBER()
+
+	virtual void register_type(oarchive_t &ar) const = 0;
 	
 protected:
 	uint64_t                   id;
@@ -301,6 +354,14 @@ public:
 		ar & *(Referent *)base_object<CacheManager>::target;
 	}
 
+	template<class Archive>
+	void serialize(Archive &ar, const unsigned int version) {
+		ar & boost::serialization::base_object<base_object<CacheManager> >(*this);
+	}
+
+	void register_type(oarchive_t &ar) const {
+		ar.template register_type<object<Referent, CacheManager> >();
+	}
 };
 
 template <class CacheManager>
@@ -311,8 +372,50 @@ public:
 		: backstore(bs),
 			cache_manager(cm),
 			objects()
-	{}
-			
+	{
+		uint64_t rootid = backstore.get_root();
+		if (rootid) {
+			std::iostream *rootsream = backstore.get(rootid);
+			checkpoint_context<CacheManager> cc(this);
+			{
+				iarchive_t ar(*rootsream);
+				ar.template get_helper<checkpoint_context<CacheManager> >(&ar) = cc;
+				ar & *this;
+			}
+			for (const auto & p : cc.unresolved_links) {
+				base_object<CacheManager> *obj = objects[p.first];
+				for (const auto & q : p.second)
+					q.first->ondisk_referents[obj] = q.second;
+			}
+		}
+	}
+
+	~swap_space(void) {
+		checkpoint();
+	}
+	
+	void checkpoint(void) {
+		cache_manager.checkpoint();
+		std::stringstream sstream;
+		checkpoint_context<CacheManager> cc(this);
+		{
+			oarchive_t ar(sstream);
+			ar.template get_helper<checkpoint_context<CacheManager> >(&ar) = cc;
+			for (const auto & p : objects)
+				p.second->register_type(ar);
+			ar & *this;
+		}		
+		std::string buffer = sstream.str();
+		uint64_t newbsid = backstore.allocate(buffer.length());
+		std::iostream *out = backstore.get(newbsid);
+		out->write(buffer.data(), buffer.length());
+		backstore.put(out);
+		uint64_t oldbsid = backstore.get_root();
+		backstore.set_root(newbsid);
+		if (oldbsid)
+			backstore.deallocate(oldbsid);
+	}
+	
 	template<class Referent>
 	class pin {
 	public:
@@ -506,6 +609,12 @@ public:
 		cache_manager.note_birth(*newobj);
     return p;
   }
+
+	template<class Archive>
+	void serialize(Archive &ar, const unsigned int version) {
+		ar & next_id;
+		ar & objects;
+	}
 	
 protected:
 	backing_store &backstore;
