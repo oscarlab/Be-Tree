@@ -330,7 +330,7 @@ private:
       for (int i = 0; i < num_new_leaves; i++) {
 				if (pivot_idx == pivots.end() && elt_idx == elements.end())
 					break;
-				node_pointer new_node = bet.ss.template allocate<node>();
+				node_pointer new_node = bet.sspace->template allocate<node>();
 				result[pivot_idx != pivots.end() ?
 							 pivot_idx->first :
 							 elt_idx->first.key] = child_info(new_node,
@@ -372,7 +372,7 @@ private:
     node_pointer merge(betree &bet,
 											 typename pivot_map::iterator begin,
 											 typename pivot_map::iterator end) {
-      node_pointer new_node = bet.ss->allocate(new node);
+      node_pointer new_node = bet.sspace->allocate(new node);
       for (auto it = begin; it != end; ++it) {
 				new_node->elements.insert(it->second.child->elements.begin(),
 																	it->second.child->elements.end());
@@ -619,7 +619,30 @@ private:
 		}
   };
 
-  swap_space<CacheManager> &ss;
+	template<class Archive>
+	void save(Archive &ar, const unsigned int version) const {
+		ar & min_flush_size;
+		ar & max_node_size;
+		ar & min_node_size;
+		ar & root;
+		ar & next_timestamp;
+		ar & default_value;
+	}
+	
+	template<class Archive>
+	void load(Archive &ar, const unsigned int version) {
+		sspace = get_swap_space(ar);
+		ar & min_flush_size;
+		ar & max_node_size;
+		ar & min_node_size;
+		ar & root;
+		ar & next_timestamp;
+		ar & default_value;
+	}
+
+	BOOST_SERIALIZATION_SPLIT_MEMBER()
+
+  swap_space<CacheManager> *sspace;
   uint64_t min_flush_size;
   uint64_t max_node_size;
   uint64_t min_node_size;
@@ -628,16 +651,16 @@ private:
   Value default_value;
   
 public:
-  betree(swap_space<CacheManager> &sspace,
+  betree(swap_space<CacheManager> &_sspace,
 				 uint64_t maxnodesize = DEFAULT_MAX_NODE_SIZE,
 				 uint64_t minnodesize = DEFAULT_MAX_NODE_SIZE / 4,
 				 uint64_t minflushsize = DEFAULT_MIN_FLUSH_SIZE) :
-    ss(sspace),
+    sspace(&_sspace),
     min_flush_size(minflushsize),
     max_node_size(maxnodesize),
     min_node_size(minnodesize)
   {
-    root = ss.template allocate<node>();
+    root = sspace->template allocate<node>();
   }
 
   // Insert the specified message and handle a split of the root if it
@@ -648,7 +671,7 @@ public:
     tmp[MessageKey<Key>(k, next_timestamp++)] = Message<Value>(opcode, v);
     pivot_map new_nodes = root->flush(*this, tmp);
     if (new_nodes.size() > 0) {
-      root = ss.template allocate<node>();
+      root = sspace->template allocate<node>();
       root->pivots = new_nodes;
     }
   }

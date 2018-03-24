@@ -104,6 +104,13 @@ class serialization_context {
 	refcount_map<CacheManager> * refcounts;
 };
 
+template<class Archive, class CacheManager>
+swap_space<CacheManager> * get_swap_space(Archive &ar) {
+	serialization_context<CacheManager> & context
+		= ar.template get_helper<serialization_context<CacheManager> >((void *)&ar);
+	return ar.ss;
+}
+
 template<class CacheManager>
 void dump_refmap(refcount_map<CacheManager> &rcm) {
   for (const auto & p : rcm) {
@@ -396,6 +403,12 @@ public:
 	
 	void checkpoint(void) {
 		cache_manager.checkpoint();
+
+		for (const auto & p : objects)
+			p.second->ref();
+		for (const auto & p : last_checkpoint)
+			p.second->unref();
+		
 		std::stringstream sstream;
 		checkpoint_context<CacheManager> cc(this);
 		{
@@ -414,8 +427,9 @@ public:
 		backstore.set_root(newbsid);
 		if (oldbsid)
 			backstore.deallocate(oldbsid);
+		last_checkpoint = objects;
 	}
-	
+
 	template<class Referent>
 	class pin {
 	public:
@@ -610,16 +624,51 @@ public:
     return p;
   }
 
-	template<class Archive>
-	void serialize(Archive &ar, const unsigned int version) {
-		ar & next_id;
-		ar & objects;
+	template <class Referent>
+	void set_root(pointer<Referent> p) {
+		assert(p.obj);
+		base_object<CacheManager> *old_root = root;
+		root = p.obj;
+		if (root)
+			root->ref();
+		if (old_root)
+			old_root->unref();
+	}
+
+	template <class Referent>
+	pointer<Referent> get_root(void) {
+		return pointer<Referent>(root);
 	}
 	
-protected:
+	
+	template<class Archive>
+	void save(Archive &ar, const unsigned int version) const {
+		ar & next_id;
+		ar & objects;
+		if (root)
+			ar & root->get_id();
+		else
+			ar & 0ULL;
+	}
+
+	template<class Archive>
+	void load(Archive &ar, const unsigned int version) {
+		ar & next_id;
+		ar & objects;
+		uint64_t rootid;
+		ar & rootid;
+		if(rootid)
+			root = objects[rootid];
+	}
+
+	BOOST_SERIALIZATION_SPLIT_MEMBER()
+	
+	protected:
 	backing_store &backstore;
 	CacheManager &cache_manager;
+  std::unordered_map<uint64_t, base_object<CacheManager> *> last_checkpoint;
   std::unordered_map<uint64_t, base_object<CacheManager> *> objects;
+	base_object<CacheManager> *root = NULL;
   uint64_t next_id = 1;
 };
 
