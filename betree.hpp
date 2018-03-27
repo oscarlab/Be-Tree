@@ -244,7 +244,8 @@ private:
     //         http://stackoverflow.com/a/858893
     template<class OUT, class IN>
     static OUT get_pivot(IN & mp, const Key & k) {
-      assert(mp.size() > 0);
+			if (mp.size() == 0)
+				return mp.end();
       auto it = mp.lower_bound(k);
       if (it == mp.begin() && k < it->first)
 				throw std::out_of_range("Key does not exist "
@@ -265,30 +266,6 @@ private:
     get_pivot(const Key & k) {
       return get_pivot<typename pivot_map::iterator, pivot_map>(pivots, k);
     }
-
-    // Return iterator pointing to the first element with mk >= k.
-    // (Same const/non-const templating trick as above)
-    // template<class OUT, class IN>
-    // static OUT get_element_begin(IN & elts, const Key &k) {
-    //   return elts.lower_bound(MessageKey<Key>::range_start(k));
-    // }
-
-    // typename message_map::iterator get_element_begin(const Key &k) {
-    //   return get_element_begin<typename message_map::iterator,
-		// 													 message_map>(get_pivot(k)->second.elements, k);
-    // }
-
-    // typename message_map::const_iterator get_element_begin(const Key &k) const {
-    //   return get_element_begin<typename message_map::const_iterator,
-		// 													 const message_map>(get_pivot(k)->second.elements, k);
-    // }
-
-    // Return iterator pointing to the first element that goes to
-    // child indicated by it
-    // typename message_map::iterator
-    // get_element_begin(const typename pivot_map::iterator it) {
-    //   return it == pivots.end() ? elements.end() : get_element_begin(it->first);
-    // }
 
     // Apply a message to ourself.
     void apply(const MessageKey<Key> &mkey, const Message<Value> &elt,
@@ -441,15 +418,15 @@ private:
 
 			if (pivots.size() == 0) {
 				pivots[elts.begin()->first.key] = child_info();
+			} else {
+				// Update the key of the first child, if necessary
+				Key oldmin = pivots.begin()->first;
+				MessageKey<Key> newmin = elts.begin()->first;
+				if (newmin < oldmin) {
+					pivots[newmin.key] = pivots[oldmin];
+					pivots.erase(oldmin);
+				}
 			}
-
-      // Update the key of the first child, if necessary
-      Key oldmin = pivots.begin()->first;
-      MessageKey<Key> newmin = elts.begin()->first;
-      if (newmin < oldmin) {
-				pivots[newmin.key] = pivots[oldmin];
-				pivots.erase(oldmin);
-      }
 
 			if (is_leaf()) {
 				for (auto it = elts.begin(); it != elts.end(); ++it)
@@ -504,27 +481,6 @@ private:
 					}
 					if (max_size == 0)
 						break; // We need to split because we have too many pivots
-					//auto next_pivot = next(child_pivot);
-					// auto child_pivot = pivots.begin();
-					// auto next_pivot = pivots.begin();
-					// for (auto it = pivots.begin(); it != pivots.end(); ++it) {
-					// 	auto it2 = next(it);
-					// 	auto elt_it = get_element_begin(it); 
-					// 	auto elt_it2 = get_element_begin(it2); 
-					// 	unsigned int dist = distance(elt_it, elt_it2);
-					// 	if (dist > max_size) {
-					// 		child_pivot = it;
-					// 		next_pivot = it2;
-					// 		max_size = dist;
-					// 	}
-					// }
-					// if (!(max_size > bet.min_flush_size ||
-					// 			(max_size > bet.min_flush_size/2 &&
-					// 			 child_pivot->second.child.is_in_memory())))
-					// 	break; // We need to split because we have too many pivots
-					// auto elt_child_it = get_element_begin(child_pivot);
-					// auto elt_next_it = get_element_begin(next_pivot);
-					// message_map child_elts(elt_child_it, elt_next_it);
 					pivot_map new_children = child_pivot->second.child->flush(bet,
 																																		child_pivot->second.elements);
 					child_pivot->second.elements.clear();
@@ -546,64 +502,6 @@ private:
       
       debug(std::cout << "Done flushing " << this << std::endl);
       return result;
-    }
-
-    Value query(const betree & bet, const Key k) const
-    {
-      debug(std::cout << "Querying " << this << std::endl);
-			const message_map & elements = get_pivot(k)->second.elements;
-			
-      if (is_leaf()) {
-				auto it = elements.lower_bound(MessageKey<Key>::range_start(k));
-				if (it != elements.end() && it->first.key == k) {
-					assert(it->second.opcode == INSERT);
-					return it->second.val;
-				} else {
-					throw std::out_of_range("Key does not exist");
-				}
-      }
-
-      ///////////// Non-leaf
-      
-      auto message_iter = elements.lower_bound(MessageKey<Key>::range_start(k));
-      Value v = bet.default_value;
-
-      if (message_iter == elements.end() || k < message_iter->first)
-				// If we don't have any messages for this key, just search
-				// further down the tree.
-				v = get_pivot(k)->second.child->query(bet, k);
-      else if (message_iter->second.opcode == UPDATE) {
-				// We have some updates for this key.  Search down the tree.
-				// If it has something, then apply our updates to that.  If it
-				// doesn't have anything, then apply our updates to the
-				// default initial value.
-				try {
-					Value t = get_pivot(k)->second.child->query(bet, k);
-					v = t;
-				} catch (std::out_of_range e) {}
-      } else if (message_iter->second.opcode == DELETE) {
-				// We have a delete message, so we don't need to look further
-				// down the tree.  If we don't have any further update or
-				// insert messages, then we should return does-not-exist (in
-				// this subtree).
-				message_iter++;
-				if (message_iter == elements.end() || k < message_iter->first)
-					throw std::out_of_range("Key does not exist");
-      } else if (message_iter->second.opcode == INSERT) {
-				// We have an insert message, so we don't need to look further
-				// down the tree.  We'll apply any updates to this value.
-				v = message_iter->second.val;
-				message_iter++;
-      }
-
-      // Apply any updates to the value obtained above.
-      while (message_iter != elements.end() && message_iter->first.key == k) {
-				assert(message_iter->second.opcode == UPDATE);
-				v = v + message_iter->second.val;
-				message_iter++;
-      }
-
-      return v;
     }
 
     std::pair<MessageKey<Key>, Message<Value> >
@@ -633,7 +531,14 @@ private:
 		
     std::pair<MessageKey<Key>, Message<Value> >
     get_next_message(const MessageKey<Key> *mkey) const {
-			auto it = mkey ? get_pivot(mkey->key) : pivots.begin();
+			auto it = pivots.begin();
+			if (mkey) {
+				try {
+					it = get_pivot(mkey->key);
+				} catch (std::out_of_range e) {
+				}
+			}
+			
 			while (it != pivots.end()) {
 				try {
 					return get_next_message_from_pivot(it->second, mkey);
@@ -720,9 +625,11 @@ public:
   
   Value query(Key k)
   {
-    Value v = root->query(*this, k);
-    return v;
-  }
+		auto it = lower_bound(k);
+		if (it == end() || it.first != k)
+			throw std::out_of_range("Key does not exist");
+		return it.second;
+	}
 
   void dump_messages(void) {
     std::pair<MessageKey<Key>, Message<Value> > current;

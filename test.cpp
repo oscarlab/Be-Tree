@@ -74,6 +74,7 @@ template<class Key, class Value, class CacheManager>
 							 betree<Key, Value, CacheManager> &b,
 							 typename std::map<Key, Value> &reference)
 {
+	debug(b.dump_messages());
   while (refit != reference.end()) {
     assert(betit != b.end());
     assert(betit.first == refit->first);
