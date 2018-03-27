@@ -73,8 +73,8 @@
 #include "cache_manager.hpp"
 #include "debug.hpp"
 
-typedef boost::archive::text_oarchive oarchive_t;
-typedef boost::archive::text_iarchive iarchive_t;
+typedef boost::archive::binary_oarchive oarchive_t;
+typedef boost::archive::binary_iarchive iarchive_t;
 
 template <class CacheManager=lru_cache_manager>
 class swap_space;
@@ -210,6 +210,13 @@ public:
 		pincount--;
 		if (refcount == 0 && pincount == 0)
 			delete this;
+		// else if (pincount == 0)
+		// 	// The intuition here is that there have been lots of accesses
+		// 	// to this object while it's been pinned, so we shouldn't just
+		// 	// record the time of the first access, but also the time of the
+		// 	// last access.
+		// 	ss->cache_manager.note_read(*this);
+		
 		// Technically, we should consider evicting things at this point,
 		// but it's kind of expensive, so we skip it.
 	}
@@ -608,12 +615,14 @@ public:
 		}
 	};
 
-	// template<class Referent, typename... Args>
-	// pointer<Referent> allocate(Args... args) {
-	// 	Referent *target = new Referent(args...);
-	// 	object<Referent, CacheManager> * newobj = new object<Referent, CacheManager>(this, target);
-  //   return pointer<Referent>(newobj);
-  // }
+	template<class Referent, typename... Args>
+	pointer<Referent> allocate(Args... args) {
+		Referent *target = new Referent(args...);
+		object<Referent, CacheManager> * newobj = new object<Referent, CacheManager>(this, target);
+		pointer<Referent> p(newobj);
+		cache_manager.note_birth(*newobj);
+    return p;
+  }
 	
 	template <class Referent>
 	pointer<Referent> allocate(void) {

@@ -80,6 +80,7 @@ void lru_cache_manager::note_death(lru_cache_manager::reference & read_unit_ref)
 }
 
 void lru_cache_manager::maybe_evict_something(void) {
+	debug(std::cout << "maybe_evict_something: cache.size()=" << cache.size() << std::endl);
 	while (cache.size() > max_in_memory_objects) {
 		reference_to_cacheable_object<lru_cache_manager> * best = NULL;
 		
