@@ -106,10 +106,6 @@ INTERESTING PROJECTS AND TODOS
 
 - Implement checkpointing and saving/loading of the betree.
 
-- Use boost serialization.  The main challenge that I see is that the
-  deserialization code needs a context for the deserialization, but
-  boost serialization does not provide this.
-
 - Implement compression and partial eviction (i.e. "evict" a node by
   compressing it but keeping it in memory)
 

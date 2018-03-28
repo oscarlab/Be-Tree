@@ -107,6 +107,7 @@ void usage(char *name)
     << "        benchmark modes:"                                                                               << std::endl
     << "          upserts    "                                                                                  << std::endl
     << "          queries    "                                                                                  << std::endl
+		<< "          sequential-inserts "                                                                          << std::endl
     << "  Betree tuning parameters:" << std::endl
     << "    -N <max_node_size>            (in elements)     [ default: " << DEFAULT_TEST_MAX_NODE_SIZE  << " ]" << std::endl
     << "    -f <min_flush_size>           (in elements)     [ default: " << DEFAULT_TEST_MIN_FLUSH_SIZE << " ]" << std::endl
@@ -247,6 +248,38 @@ void benchmark_upserts(betree<uint64_t, std::string> &b,
 				 1000000 * (100*(nops/100)) / overall_timer);
 }
 
+void benchmark_sequential_inserts(betree<uint64_t, std::string> &b,
+																	swap_space<lru_cache_manager> &ss,
+																	uint64_t nops,
+																	uint64_t number_of_distinct_keys,
+																	uint64_t random_seed)
+{
+  uint64_t overall_timer = 0;
+	uint64_t timer;
+	
+  for (uint64_t j = 0; j < 100; j++) {
+    timer = 0;
+    timer_start(timer);
+    for (uint64_t i = 0; i < nops / 100; i++) {
+      uint64_t t = (j * (nops / 100) + i) % number_of_distinct_keys;
+      b.update(t, std::to_string(t) + ":");
+    }
+    timer_stop(timer);
+    printf("%ld %ld %ld\n", j, nops/100, timer);
+    overall_timer += timer;
+  }
+	printf("Checkpointing\n");
+	timer_start(timer = 0);
+	ss.checkpoint();
+	timer_stop(timer);
+	printf("Checkpoint time: %ld microsecs\n", timer);
+	overall_timer += timer;
+  printf("# overall: %ld sequential inserts in %ld microsecs (%ld sequential inserts/sec)\n",
+				 100*(nops/100),
+				 overall_timer,
+				 1000000 * (100*(nops/100)) / overall_timer);
+}
+
 void benchmark_queries(betree<uint64_t, std::string> &b,
 		       uint64_t nops,
 		       uint64_t number_of_distinct_keys,
@@ -371,7 +404,8 @@ int main(int argc, char **argv)
   if (mode == NULL ||
       (strcmp(mode, "test") != 0
        && strcmp(mode, "benchmark-upserts") != 0
-			 && strcmp(mode, "benchmark-queries") != 0)) {
+			 && strcmp(mode, "benchmark-queries") != 0
+			 && strcmp(mode, "benchmark-sequential-inserts") != 0)) {
     std::cerr << "Must specify a mode of \"test\" or \"benchmark\"" << std::endl;
     usage(argv[0]);
     exit(1);
@@ -429,6 +463,8 @@ int main(int argc, char **argv)
     benchmark_upserts(b, sspace, nops, number_of_distinct_keys, random_seed);
   else if (strcmp(mode, "benchmark-queries") == 0)
     benchmark_queries(b, nops, number_of_distinct_keys, random_seed);
+  else if (strcmp(mode, "benchmark-sequential-inserts") == 0)
+    benchmark_sequential_inserts(b, sspace, nops, number_of_distinct_keys, random_seed);
   
   if (script_input)
     fclose(script_input);
