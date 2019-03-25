@@ -58,69 +58,6 @@
 
 ////////////////// Upserts
 
-// Internally, we store data indexed by both the user-specified key
-// and a timestamp, so that we can apply upserts in the correct order.
-template<class Key>
-class MessageKey {
-public:
-  MessageKey(void) :
-    key(),
-    timestamp(0)
-  {}
-
-  MessageKey(const Key & k, uint64_t tstamp) :
-    key(k),
-    timestamp(tstamp)
-  {}
-
-  static MessageKey range_start(const Key &key) {
-    return MessageKey(key, 0);
-  }
-  
-  static MessageKey range_end(const Key &key) {
-    return MessageKey(key, UINT64_MAX);
-  }
-  
-  MessageKey range_start(void) const {
-    return range_start(key);
-  }
-
-  MessageKey range_end(void) const {
-    return range_end(key);
-  }
-
-	template<class Archive>
-	void serialize(Archive &ar, const unsigned int version) {
-		ar & timestamp;
-		ar & key;
-	}
-
-  Key key;
-  uint64_t timestamp;
-};
-
-template<class Key>
-bool operator<(const MessageKey<Key> & mkey1, const MessageKey<Key> & mkey2) {
-  return mkey1.key < mkey2.key ||
-										 (mkey1.key == mkey2.key && mkey1.timestamp < mkey2.timestamp);
-}
-
-template<class Key>
-bool operator<(const Key & key, const MessageKey<Key> & mkey) {
-  return key < mkey.key;
-}
-
-template<class Key>
-bool operator<(const MessageKey<Key> & mkey, const Key & key) {
-  return mkey.key < key;
-}
-
-template<class Key>
-bool operator==(const MessageKey<Key> &a, const MessageKey<Key> &b) {
-  return a.key == b.key && a.timestamp == b.timestamp;
-}
-  
-
 // The three types of upsert.  An UPDATE specifies a value, v, that
 // will be added (using operator+) to the old value associated to some
 // key in the tree.  If there is no old value associated with the key,
@@ -129,6 +66,37 @@ bool operator==(const MessageKey<Key> &a, const MessageKey<Key> &b) {
 #define INSERT (0)
 #define DELETE (1)
 #define UPDATE (2)
+
+template<class Key>
+class KeyInstance {
+public:
+	KeyInstance(int64_t h = -1)
+		: height(h)
+	{}
+	
+	KeyInstance(const Key k, int64_t h = -1)
+		: key(k),
+			height(h)
+	{}
+	
+	Key key;
+	int64_t height;
+};
+
+template <class Key>
+bool operator<(const KeyInstance<Key> &a, const KeyInstance<Key> &b) {
+	return a.key < b.key || (a.key == b.key && a.height < b.height);
+}
+
+template <class Key>
+bool operator==(const KeyInstance<Key> &a, const KeyInstance<Key> &b) {
+	return a.key == b.key && a.height == b.height;
+}
+
+template <class Key>
+bool operator!=(const KeyInstance<Key> &a, const KeyInstance<Key> &b) {
+	return !operator==(a, b);
+}
 
 template<class Value>
 class Message {
@@ -175,7 +143,7 @@ private:
 
 	using node_pointer = typename swap_space<CacheManager>::template pointer<node>;
 	
-  typedef typename std::map<MessageKey<Key>, Message<Value> > message_map;
+  typedef typename std::map<Key, Message<Value> > message_map;
 
   class child_info {
   public:
@@ -268,43 +236,38 @@ private:
     }
 
     // Apply a message to ourself.
-    void apply(const MessageKey<Key> &mkey, const Message<Value> &elt,
+    void apply(const Key &key, const Message<Value> &elt,
 							 Value &default_value) {
-			message_map &elements = get_pivot(mkey.key)->second.elements;
+			message_map &elements = get_pivot(key)->second.elements;
       switch (elt.opcode) {
       case INSERT:
-				elements.erase(elements.lower_bound(mkey.range_start()),
-											 elements.upper_bound(mkey.range_end()));
-				elements[mkey] = elt;
+				elements[key] = elt;
 				break;
 
       case DELETE:
-				elements.erase(elements.lower_bound(mkey.range_start()),
-											 elements.upper_bound(mkey.range_end()));
-				if (!is_leaf())
-					elements[mkey] = elt;
+				if (is_leaf())
+					elements.erase(key);
+				else
+					elements[key] = elt;
 				break;
 
       case UPDATE:
 				{
-					auto iter = elements.upper_bound(mkey.range_end());
-					if (iter != elements.begin())
-						iter--;
-					if (iter == elements.end() || iter->first.key != mkey.key)
+					auto iter = elements.lower_bound(key);
+					if (iter == elements.end() || iter->first != key) {
 						if (is_leaf()) {
-							Value dummy = default_value;
-							apply(mkey, Message<Value>(INSERT, dummy + elt.val),
-										default_value);
+							elements[key] = Message<Value>(INSERT, default_value + elt.val);
 						} else {
-							elements[mkey] = elt;
+							elements[key] = elt;
 						}
-					else {
-						assert(iter != elements.end() && iter->first.key == mkey.key);
-						if (iter->second.opcode == INSERT) {
-							apply(mkey, Message<Value>(INSERT, iter->second.val + elt.val),
-										default_value);	  
+					} else {
+						assert(iter != elements.end() && iter->first == key);
+						if (iter->second.opcode == INSERT || iter->second.opcode == UPDATE) {
+							iter->second.val = iter->second.val + elt.val;
+						} else if (iter->second.opcode == DELETE) {
+							iter->second = Message<Value>(INSERT, default_value + elt.val);
 						} else {
-							elements[mkey] = elt;	      
+							assert(0);
 						}
 					}
 				}
@@ -386,7 +349,7 @@ private:
 			std::advance(midpoint, ci.elements.size()/2);
 			elements.insert(midpoint, ci.elements.end());
 			ci.elements.erase(midpoint, ci.elements.end());
-			pivots[elements.begin()->first.key].elements.swap(elements);
+			pivots[elements.begin()->first].elements.swap(elements);
 		}
 		
 		void rebalance_leaf_pivots(betree &bet) {
@@ -417,13 +380,13 @@ private:
       }
 
 			if (pivots.size() == 0) {
-				pivots[elts.begin()->first.key] = child_info();
+				pivots[elts.begin()->first] = child_info();
 			} else {
 				// Update the key of the first child, if necessary
 				Key oldmin = pivots.begin()->first;
-				MessageKey<Key> newmin = elts.begin()->first;
+				Key newmin = elts.begin()->first;
 				if (newmin < oldmin) {
-					pivots[newmin.key] = pivots[oldmin];
+					pivots[newmin] = pivots[oldmin];
 					pivots.erase(oldmin);
 				}
 			}
@@ -442,8 +405,8 @@ private:
 
       // If everything is going to a single dirty child, go ahead
       // and put it there.
-      auto first_pivot_idx = get_pivot(elts.begin()->first.key);
-      auto last_pivot_idx = get_pivot((--elts.end())->first.key);
+      auto first_pivot_idx = get_pivot(elts.begin()->first);
+      auto last_pivot_idx = get_pivot((--elts.end())->first);
       if (first_pivot_idx == last_pivot_idx &&
 					first_pivot_idx->second.child.is_dirty()) {
       	// There shouldn't be anything in our buffer for this child,
@@ -504,44 +467,49 @@ private:
       return result;
     }
 
-    std::pair<MessageKey<Key>, Message<Value> >
+    std::pair<KeyInstance<Key>, Message<Value> >
 		get_next_message_from_pivot(const child_info & ci,
-																const MessageKey<Key> *mkey) const {
-			auto it = mkey ? ci.elements.upper_bound(*mkey) : ci.elements.begin();
+																const KeyInstance<Key> &ki) const {
+			if (ki.height >= (int64_t)height)
+				throw std::out_of_range("No more messages in sub-tree");
 			
-      if (is_leaf()) {
-				if (it == ci.elements.end())
+			auto it = ci.elements.upper_bound(ki.key);
+			
+      if (it == ci.elements.end()) {
+				if (ki.height + 1 < (int64_t)height)
+					return ci.child->get_next_message(ki);
+				else
 					throw std::out_of_range("No more messages in sub-tree");
-				return std::make_pair(it->first, it->second);
-      }
+			}
 
-      if (it == ci.elements.end())
-				return ci.child->get_next_message(mkey);
+			if (it->first == ki.key && ki.height + 1 == (int64_t)height) {
+					return std::make_pair(KeyInstance<Key>(it->first, height), it->second);
+			}
 			
-      try {
-				auto kids = ci.child->get_next_message(mkey);
-				if (kids.first < it->first)
+			try {
+				auto kids = ci.child->get_next_message(ki);
+				if (kids.first.key < it->first ||
+						kids.first.key == ki.key)
 					return kids;
-				else 
-					return std::make_pair(it->first, it->second);
-      } catch (std::out_of_range e) {
-				return std::make_pair(it->first, it->second);	
-      }
+				else
+					return std::make_pair(KeyInstance<Key>(it->first, height), it->second);
+			} catch (std::out_of_range e) {
+				return std::make_pair(KeyInstance<Key>(it->first, height), it->second);	
+			}
 		}
 		
-    std::pair<MessageKey<Key>, Message<Value> >
-    get_next_message(const MessageKey<Key> *mkey) const {
-			auto it = pivots.begin();
-			if (mkey) {
-				try {
-					it = get_pivot(mkey->key);
-				} catch (std::out_of_range e) {
-				}
+    std::pair<KeyInstance<Key>, Message<Value> >
+    get_next_message(const KeyInstance<Key> &ki) const {
+			typename pivot_map::const_iterator it;
+			try {
+				it = get_pivot(ki.key);
+			} catch (std::out_of_range e) {
+				it = pivots.begin();
 			}
 			
 			while (it != pivots.end()) {
 				try {
-					return get_next_message_from_pivot(it->second, mkey);
+					return get_next_message_from_pivot(it->second, ki);
 				} catch (std::out_of_range e) {
 					++it;
 				}
@@ -600,7 +568,7 @@ public:
   void upsert(int opcode, Key k, Value v)
   {
     message_map tmp;
-    tmp[MessageKey<Key>(k, next_timestamp++)] = Message<Value>(opcode, v);
+    tmp[k] = Message<Value>(opcode, v);
     pivot_map new_nodes = root->flush(*this, tmp);
     if (new_nodes.size() > 0) {
       root = sspace->template allocate<node>(root->height+1);
@@ -632,18 +600,19 @@ public:
 	}
 
   void dump_messages(void) {
-    std::pair<MessageKey<Key>, Message<Value> > current;
+    std::pair<KeyInstance<Key>, Message<Value> > current;
 
     std::cout << "############### BEGIN DUMP ##############" << std::endl;
     
     try {
-      current = root->get_next_message(NULL);
+			KeyInstance<Key> ki(root->pivots.begin()->first);
+      current = root->get_next_message(ki);
       do { 
 				std::cout << current.first.key       << " "
-									<< current.first.timestamp << " "
+									<< current.first.height    << " "
 									<< current.second.opcode   << " "
 									<< current.second.val      << std::endl;
-				current = root->get_next_message(&current.first);
+				current = root->get_next_message(current.first);
       } while (1);
     } catch (std::out_of_range e) {}
   }
@@ -660,7 +629,7 @@ public:
 				second()
     {}
 
-    iterator(const betree &bet, const MessageKey<Key> *mkey)
+    iterator(const betree &bet, const KeyInstance<Key> &ki)
       : bet(bet),
 				position(),	
 				is_valid(false),
@@ -669,21 +638,21 @@ public:
 				second()
     {
       try {
-				position = bet.root->get_next_message(mkey);
+				position = bet.root->get_next_message(ki);
 				pos_is_valid = true;
 				setup_next_element();
       } catch (std::out_of_range e) {}
     }
 
-    void apply(const MessageKey<Key> &msgkey, const Message<Value> &msg) {
+    void apply(const Key &key, const Message<Value> &msg) {
       switch (msg.opcode) {
       case INSERT:
-				first = msgkey.key;
+				first = key;
 				second = msg.val;
 				is_valid = true;
 				break;
       case UPDATE:
-				first = msgkey.key;
+				first = key;
 				if (is_valid == false)
 					second = bet.default_value;
 				second = second + msg.val;
@@ -701,9 +670,9 @@ public:
     void setup_next_element(void) {
       is_valid = false;
       while (pos_is_valid && (!is_valid || position.first.key == first)) {
-				apply(position.first, position.second);
+				apply(position.first.key, position.second);
 				try {
-					position = bet.root->get_next_message(&position.first);
+					position = bet.root->get_next_message(position.first);
 				} catch (std::exception e) {
 					pos_is_valid = false;
 				}
@@ -728,7 +697,7 @@ public:
     }
     
     const betree &bet;
-    std::pair<MessageKey<Key>, Message<Value> > position;
+    std::pair<KeyInstance<Key>, Message<Value> > position;
     bool is_valid;
     bool pos_is_valid;
     Key first;
@@ -736,17 +705,18 @@ public:
   };
 
   iterator begin(void) const {
-    return iterator(*this, NULL);
+		KeyInstance<Key> ki(root->pivots.begin()->first); 
+    return iterator(*this, ki);
   }
 
   iterator lower_bound(Key key) const {
-    MessageKey<Key> tmp = MessageKey<Key>::range_start(key);
-    return iterator(*this, &tmp);
+		KeyInstance<Key> ki(key); 
+    return iterator(*this, ki);
   }
   
   iterator upper_bound(Key key) const {
-    MessageKey<Key> tmp = MessageKey<Key>::range_end(key);
-    return iterator(*this, &tmp);
+		KeyInstance<Key> ki(key, INT64_MAX / 2); 
+    return iterator(*this, ki);
   }
   
   iterator end(void) const {

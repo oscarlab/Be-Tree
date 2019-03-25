@@ -646,6 +646,11 @@ public:
 
 	template <class Referent>
 	pointer<Referent> get_root(void) {
+    if (root == NULL) {
+      uint64_t root_id = backstore.get_root();
+      if (root_id > 0) {
+      }
+    }
 		return pointer<Referent>(root);
 	}
 	
